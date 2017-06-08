@@ -172,7 +172,8 @@ struct Config
 	std::string mOutputName; //!< Name of the output image file.
 	Vec2i       mResolution; //!< Resolution of the rendered image.
 
-	Framebuffer *mFramebuffer; //!< Framebuffer that accumulates result of rendering iterations.
+	int         mNumCameras; //!< Number of cameras used for rendering.
+	Framebuffer **mFramebuffers; //!< Framebuffer that accumulates result of rendering iterations.
 	
 	uint mMaxPathLength; //!< Maximum length of constructed paths.
 	uint mMinPathLength; //!< Minimum length of constructed paths.
@@ -1161,6 +1162,7 @@ void PrintShortHelp(const char *argv[])
     printf("    -l  Maximum length of traced paths (default 10).\n");
 	printf("    -t  Number of seconds to run the algorithm.\n");
     printf("    -i  Number of iterations to run the algorithm (default 1).\n");
+	printf("    -nc Number of cameras (default 1).\n");
     printf("    -o  User specified output name, with extension .bmp or .exr (default .exr). The name can be prefixed with relative or absolute path but the path must exists.\n");	
 	printf("\n    Note: Time (-t) takes precedence over iterations (-i) if both are defined.\n"); 
 	printf("\n    For more options, please see full help (-hf)\n");
@@ -1423,6 +1425,15 @@ void ParseCommandline(int argc, const char *argv[], Config &oConfig)
 			oConfig.mResolution = Vec2i(w, h);
 
 			additionalArgs << "_r" << argv[i];
+		}
+		else if (arg == "-nc") // number of cameras
+		{
+			if (++i == argc) ReportParsingError("missing argument of -nc option, please see help (-h)");
+
+			std::istringstream iss(argv[i]);
+			iss >> oConfig.mNumCameras;
+
+			if (iss.fail() || oConfig.mNumCameras < 1) ReportParsingError("invalid argument of -nc option, please see help (-h)");
 		}
 		else if (arg == "-seed")
 		{

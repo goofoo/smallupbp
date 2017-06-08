@@ -135,49 +135,52 @@ float render(
     if(oUsedIterations)
         *oUsedIterations = iter+1;
 
-	int usedRenderers = 0;
+	for (int ci = 0; ci < aConfig.mNumCameras; ci++)
+	{
+		int usedRenderers = 0;
 
-	aConfig.mCameraTracingTime = 0;
-	aConfig.mBeamDensity.Setup(aConfig.mBeamDensType, aConfig.mScene->mCamera.mResolution, aConfig.mBeamDensMax);
+		aConfig.mCameraTracingTime = 0;
+		aConfig.mBeamDensity.Setup(aConfig.mBeamDensType, aConfig.mScene->mCamera.mResolution, aConfig.mBeamDensMax);
 
-    // Not all created renderers had to have been used.
-    // Those must not participate in accumulation.
-    for(int i=0; i<usedThreads; i++)
-    {
-        if(!renderers[i]->WasUsed())
-            continue;
+		// Not all created renderers had to have been used.
+		// Those must not participate in accumulation.
+		for (int i = 0; i < usedThreads; i++)
+		{
+			if (!renderers[i]->WasUsed())
+				continue;
+
+			if (aConfig.mContinuousOutput <= 0)
+			{
+				if (usedRenderers == 0)
+				{
+					renderers[i]->GetFramebuffer(*aConfig.mFramebuffers[ci]);
+				}
+				else
+				{
+					Framebuffer tmp;
+					renderers[i]->GetFramebuffer(tmp);
+					aConfig.mFramebuffers[ci]->Add(tmp);
+				}
+			}
+
+			renderers[i]->AccumulateDebugImages(aConfig.mDebugImages);
+			renderers[i]->AccumulateBeamDensity(aConfig.mBeamDensity);
+
+			aConfig.mCameraTracingTime += renderers[i]->mCameraTracingTime;
+
+			usedRenderers++;
+		}
 
 		if (aConfig.mContinuousOutput <= 0)
 		{
-			if (usedRenderers == 0)
-			{
-				renderers[i]->GetFramebuffer(*aConfig.mFramebuffer);
-			}
-			else
-			{
-				Framebuffer tmp;
-				renderers[i]->GetFramebuffer(tmp);
-				aConfig.mFramebuffer->Add(tmp);
-			}
+			// Scale framebuffer by the number of used renderers
+			aConfig.mFramebuffers[ci]->Scale(1.f / usedRenderers);
 		}
-
-		renderers[i]->AccumulateDebugImages(aConfig.mDebugImages);
-		renderers[i]->AccumulateBeamDensity(aConfig.mBeamDensity);
-
-		aConfig.mCameraTracingTime += renderers[i]->mCameraTracingTime;
-
-        usedRenderers++;
-    }
-	
-	if (aConfig.mContinuousOutput <= 0)
-	{
-		// Scale framebuffer by the number of used renderers
-		aConfig.mFramebuffer->Scale(1.f / usedRenderers);
-	}
-	else
-	{
-		*aConfig.mFramebuffer = accumFrameBuffer;
-		aConfig.mFramebuffer->Scale(1.f / iter);
+		else
+		{
+			*aConfig.mFramebuffers[ci] = accumFrameBuffer;
+			aConfig.mFramebuffers[ci]->Scale(1.f / iter);
+		}
 	}
 
 	aConfig.mCameraTracingTime /= iter;
@@ -216,8 +219,12 @@ int main(int argc, const char *argv[])
 			return 1;
 
 		// Sets up framebuffer
-		Framebuffer fbuffer;
-		config.mFramebuffer = &fbuffer;
+		Framebuffer **fbuffers = new Framebuffer *[config.mNumCameras];
+		for (size_t i = 0; i < config.mNumCameras; i++)
+		{
+			fbuffers[i] = new Framebuffer();
+		}
+		config.mFramebuffers = fbuffers;
 
 		// Prints what we are doing
 		printf("Scene:    %s\n", config.mScene->mSceneName.c_str());
@@ -257,15 +264,27 @@ int main(int argc, const char *argv[])
 			config.mOutputName = modifiedOutputName.str();
 		}
 
-		// Saves the image
-		fbuffer.Save(config.mOutputName, 2.2f /*gamma*/);
-
 		std::string name = config.mOutputName.substr(0, config.mOutputName.length() - 4);
+
+		// Saves the image
+		for (int ci = 0; ci < config.mNumCameras; ci++)
+		{
+			std::string oName(name);
+			oName += "_cam";
+			oName += '0' + ci;
+			(*fbuffers[ci]).Save(oName + "." + extension, 2.2f /*gamma*/);
+		}
+		
 		config.mDebugImages.Output(name, extension);
 		config.mBeamDensity.Output(name, extension);
 
 		// Scene cleanup
 		delete config.mScene;
+		for (size_t i = 0; i < config.mNumCameras; i++)
+		{
+			delete fbuffers[i];
+		}
+		delete[] fbuffers;
 
 		return 0;
 	}
