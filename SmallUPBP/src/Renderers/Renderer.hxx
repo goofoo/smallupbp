@@ -45,24 +45,34 @@ public:
         mMaxPathLength = 2;
 		mCameraTracingTime = 0;
         mIterations = 0;
-        mFramebuffer.Setup(aScene.mCamera.mResolution);
+		UPBP_ASSERT(mFramebuffers.size() == 0);
+		for (size_t i = 0; i < aScene.mCameras.size(); i++)
+		{
+			mFramebuffers.push_back(new Framebuffer());
+			mFramebuffers[i]->Setup(aScene.mCameras[i]->mResolution);
+		}
     }
 
-    virtual ~AbstractRenderer(){}
+    virtual ~AbstractRenderer(){
+		for (size_t i = 0; i < mFramebuffers.size(); i++)
+		{
+			delete mFramebuffers[i];
+		}
+	}
 
     virtual void RunIteration(int aIteration) = 0;
 
-    void GetFramebuffer(Framebuffer& oFramebuffer)
+    void GetFramebuffer(size_t index, Framebuffer& oFramebuffer)
     {
-        oFramebuffer = mFramebuffer;
+        oFramebuffer = *mFramebuffers[index];
 
         if(mIterations > 0)
             oFramebuffer.Scale(1.f / mIterations);
     }
 
-	Framebuffer & GetFramebufferUnscaled()
+	Framebuffer & GetFramebufferUnscaled(size_t index)
 	{
-		return mFramebuffer;
+		return *mFramebuffers[index];
 	}
 
 	// Setups internal debug images
@@ -101,7 +111,7 @@ public:
 protected:
 
     int          mIterations;
-    Framebuffer  mFramebuffer;
+	std::vector<Framebuffer*> mFramebuffers;
     const Scene& mScene;
 	DebugImages  mDebugImages;
 	BeamDensity  mBeamDensity;

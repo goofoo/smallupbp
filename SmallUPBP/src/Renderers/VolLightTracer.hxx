@@ -119,168 +119,176 @@ public:
 
     virtual void RunIteration(int aIteration)
     {				
-		if(mVerbose)
-			std::cout << " + tracing light sub-paths..." << std::endl;
 		
-		mTimer.Start();
 
-		// While we have the same number of pixels (camera paths)
-        // and light paths, we do keep them separate for clarity reasons
-        const int resX = int(mScene.mCamera.mResolution.get(0));
-        const int resY = int(mScene.mCamera.mResolution.get(1));
-		
-		const int pathCount = resX * resY;
-        mScreenPixelCount = float(resX * resY);
-        mLightSubPathCount   = float(pathCount);
-		
-		if (mBB1DUsedLightSubPathCount < 0)
-			mBB1DUsedLightSubPathCount = -mBB1DUsedLightSubPathCount * pathCount;
-
-		// Radius reduction (1st iteration has aIteration == 0, thus offset)
-		// PB2D
-		float radiusPB2D = mPB2DRadiusInitial * std::pow(1 + aIteration * mLightSubPathCount / mRefPathCountPerIter, (mPB2DRadiusAlpha - 1) * 0.5f);		
-		radiusPB2D = std::max(radiusPB2D, 1e-7f); // Purely for numeric stability
-		const float radiusPB2DSqr = Utils::sqr(radiusPB2D);
-		// BB1D
-		float radiusBB1D = mBB1DRadiusInitial * std::pow(1 + aIteration * mBB1DUsedLightSubPathCount / mRefPathCountPerIter, mBB1DRadiusAlpha - 1);		
-		radiusBB1D = std::max(radiusBB1D, 1e-7f); // Purely for numeric stability
-
-        // Clear path ends
-        mPathEnds.resize(pathCount);
-        memset(&mPathEnds[0], 0, mPathEnds.size() * sizeof(int));
-
-        // Remove all light vertices and reserve space for some	
-		mLightVertices.clear();
-		mPhotonBeamsArray.clear();
-		if (mVersion & kPointBeam)
+		for (size_t camID = 0; camID < mScene.mCameras.size(); camID++)
 		{
-			mLightVertices.reserve(pathCount);
-		}
-		else
-		{
-			mPhotonBeamsArray.reserve(pathCount * 2);
-		}
+			if (mVerbose)
+				std::cout << " + tracing light sub-paths..." << std::endl;
 
-        //////////////////////////////////////////////////////////////////////////
-        // Generate light paths
-        //////////////////////////////////////////////////////////////////////////
+			mTimer.Start();
 
-		if (mScene.GetLightCount() > 0 && mMaxPathLength > 1)
-			for (int pathIdx = 0; pathIdx < pathCount; pathIdx++)
-        {								
-			// Generate light path origin and direction
-			SubPathState lightState;
-            GenerateLightSample(lightState);
+			Camera &cam = *mScene.mCameras[camID];
+			Framebuffer &fbuffer = *mFramebuffers[camID];
 
-			// In attenuating media the ray can never travel from infinity
-			if (!lightState.mIsFiniteLight && mScene.GetGlobalMediumPtr()->HasAttenuation())
-				continue;
+			// While we have the same number of pixels (camera paths)
+			// and light paths, we do keep them separate for clarity reasons
+			const int resX = int(cam.mResolution.get(0));
+			const int resY = int(cam.mResolution.get(1));
 
-			// We assume that the light is on surface
-			bool originInMedium = false;
+			const int pathCount = resX * resY;
+			mScreenPixelCount = float(resX * resY);
+			mLightSubPathCount = float(pathCount);
 
-            //////////////////////////////////////////////////////////////////////////
-            // Trace light path
-            for (;; ++lightState.mPathLength)
-            {
-				// Prepare ray
-                Ray ray(lightState.mOrigin, lightState.mDirection);
-                Isect isect(1e36f);
+			if (mBB1DUsedLightSubPathCount < 0)
+				mBB1DUsedLightSubPathCount = -mBB1DUsedLightSubPathCount * pathCount;
 
-				// Trace ray
-				mVolumeSegments.clear();
-				mLiteVolumeSegments.clear();
-				bool intersected = mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, mVolumeSegments, mLiteVolumeSegments);
+			// Radius reduction (1st iteration has aIteration == 0, thus offset)
+			// PB2D
+			float radiusPB2D = mPB2DRadiusInitial * std::pow(1 + aIteration * mLightSubPathCount / mRefPathCountPerIter, (mPB2DRadiusAlpha - 1) * 0.5f);
+			radiusPB2D = std::max(radiusPB2D, 1e-7f); // Purely for numeric stability
+			const float radiusPB2DSqr = Utils::sqr(radiusPB2D);
+			// BB1D
+			float radiusBB1D = mBB1DRadiusInitial * std::pow(1 + aIteration * mBB1DUsedLightSubPathCount / mRefPathCountPerIter, mBB1DRadiusAlpha - 1);
+			radiusBB1D = std::max(radiusBB1D, 1e-7f); // Purely for numeric stability
 
-				// Store beam if required
-				if ((mVersion & kBeamBeam) && pathIdx < mBB1DUsedLightSubPathCount)
+													  // Clear path ends
+			mPathEnds.resize(pathCount);
+			memset(&mPathEnds[0], 0, mPathEnds.size() * sizeof(int));
+
+			// Remove all light vertices and reserve space for some	
+			mLightVertices.clear();
+			mPhotonBeamsArray.clear();
+			if (mVersion & kPointBeam)
+			{
+				mLightVertices.reserve(pathCount);
+			}
+			else
+			{
+				mPhotonBeamsArray.reserve(pathCount * 2);
+			}
+
+			//////////////////////////////////////////////////////////////////////////
+			// Generate light paths
+			//////////////////////////////////////////////////////////////////////////
+
+			if (mScene.GetLightCount() > 0 && mMaxPathLength > 1)
+				for (int pathIdx = 0; pathIdx < pathCount; pathIdx++)
 				{
-					AddBeams(ray, lightState.mThroughput);
-				}
+					// Generate light path origin and direction
+					SubPathState lightState;
+					GenerateLightSample(lightState);
 
-				if (!intersected)
-					break;
+					// In attenuating media the ray can never travel from infinity
+					if (!lightState.mIsFiniteLight && mScene.GetGlobalMediumPtr()->HasAttenuation())
+						continue;
 
-				UPBP_ASSERT(isect.IsValid());
+					// We assume that the light is on surface
+					bool originInMedium = false;
 
-				// Same throughput before update by volume propagation
-				const Rgb prevThroughput = lightState.mThroughput;
-				
-				// Attenuate by intersected media (if any)
-				float raySamplePdf(1.0f);
-				if (!mVolumeSegments.empty())
-				{					
-					// PDF
-					raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
-					UPBP_ASSERT(raySamplePdf > 0);
-					
-					// Attenuation
-					lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;					
-				}
-
-				if (lightState.mThroughput.isBlackOrNegative()) 
-					break;				
-
-				// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
-				BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
-            
-				if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
-					break;
-
-				// Compute hitpoint
-                const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
-
-				originInMedium = isect.IsInMedium();
-
-                // Store vertex, unless scattering function is purely specular, which prevents
-                // vertex connections and merging (not used by pure light tracing)
-				if (mVersion & kPointBeam )
-				{
-					if (!bsdf.IsDelta())
+					//////////////////////////////////////////////////////////////////////////
+					// Trace light path
+					for (;; ++lightState.mPathLength)
 					{
-						VltLightVertex lightVertex;
-						lightVertex.mHitpoint = hitPoint;
-						lightVertex.mIncEdgeLength = isect.mDist;
-						lightVertex.mThroughput = lightState.mThroughput;
-						lightVertex.mPrevThroughput = prevThroughput;
-						lightVertex.mPathLength = lightState.mPathLength;
-						lightVertex.mIsInMedium = isect.IsInMedium();
-						lightVertex.mBSDF = bsdf;
+						// Prepare ray
+						Ray ray(lightState.mOrigin, lightState.mDirection);
+						Isect isect(1e36f);
 
-						mLightVertices.push_back(lightVertex);
+						// Trace ray
+						mVolumeSegments.clear();
+						mLiteVolumeSegments.clear();
+						bool intersected = mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, mVolumeSegments, mLiteVolumeSegments);
+
+						// Store beam if required
+						if ((mVersion & kBeamBeam) && pathIdx < mBB1DUsedLightSubPathCount)
+						{
+							AddBeams(ray, lightState.mThroughput);
+						}
+
+						if (!intersected)
+							break;
+
+						UPBP_ASSERT(isect.IsValid());
+
+						// Same throughput before update by volume propagation
+						const Rgb prevThroughput = lightState.mThroughput;
+
+						// Attenuate by intersected media (if any)
+						float raySamplePdf(1.0f);
+						if (!mVolumeSegments.empty())
+						{
+							// PDF
+							raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
+							UPBP_ASSERT(raySamplePdf > 0);
+
+							// Attenuation
+							lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
+						}
+
+						if (lightState.mThroughput.isBlackOrNegative())
+							break;
+
+						// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
+						BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
+
+						if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
+							break;
+
+						// Compute hitpoint
+						const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+
+						originInMedium = isect.IsInMedium();
+
+						// Store vertex, unless scattering function is purely specular, which prevents
+						// vertex connections and merging (not used by pure light tracing)
+						if (mVersion & kPointBeam)
+						{
+							if (!bsdf.IsDelta())
+							{
+								VltLightVertex lightVertex;
+								lightVertex.mHitpoint = hitPoint;
+								lightVertex.mIncEdgeLength = isect.mDist;
+								lightVertex.mThroughput = lightState.mThroughput;
+								lightVertex.mPrevThroughput = prevThroughput;
+								lightVertex.mPathLength = lightState.mPathLength;
+								lightVertex.mIsInMedium = isect.IsInMedium();
+								lightVertex.mBSDF = bsdf;
+
+								mLightVertices.push_back(lightVertex);
+							}
+						}
+
+						// Connect to camera, unless scattering function is purely specular
+						if ((mVersion & kLightTracer) && (!bsdf.IsDelta()))
+						{
+							if (lightState.mPathLength + 1 >= mMinPathLength)
+								ConnectToCamera(camID, lightState, hitPoint, bsdf, isect);
+						}
+
+						// Terminate if the path would become too long after scattering
+						if (lightState.mPathLength + 2 > mMaxPathLength)
+							break;
+
+						// Continue random walk
+						if (!SampleScattering(bsdf, hitPoint, lightState, isect))
+							break;
 					}
+
+					mPathEnds[pathIdx] = (int)mLightVertices.size(); // (not used by pure light tracing)
 				}
-				
-                // Connect to camera, unless scattering function is purely specular
-                if ( (mVersion & kLightTracer) && (!bsdf.IsDelta()) )
-                {
-                    if (lightState.mPathLength + 1 >= mMinPathLength)
-                        ConnectToCamera(lightState, hitPoint, bsdf, isect);
-                }
 
-                // Terminate if the path would become too long after scattering
-                if (lightState.mPathLength + 2 > mMaxPathLength) 
-					break;				
+				mTimer.Stop();
+				if (mVerbose)
+					std::cout << "    - light sub-path tracing done in " << mTimer.GetLastElapsedTime() << " sec. " << std::endl;
 
-                // Continue random walk
-                if (!SampleScattering(bsdf, hitPoint, lightState, isect)) 
-					break;				
-            }
+				//////////////////////////////////////////////////////////////////////////
+				// Generate primary rays & accumulate "photon" contributions.
+				//////////////////////////////////////////////////////////////////////////
 
-            mPathEnds[pathIdx] = (int)mLightVertices.size(); // (not used by pure light tracing)
-        }
-
-		mTimer.Stop();
-		if(mVerbose)
-			std::cout << "    - light sub-path tracing done in " << mTimer.GetLastElapsedTime() << " sec. " << std::endl;
-		
-		//////////////////////////////////////////////////////////////////////////
-		// Generate primary rays & accumulate "photon" contributions.
-		//////////////////////////////////////////////////////////////////////////
-
-		if (((mVersion & kBeamBeam) && !mPhotonBeamsArray.empty()) || ((mVersion & kPointBeam) && !mLightVertices.empty()))
-		{
-			CalculatePhotonContributions(resX, resY);
+				if (((mVersion & kBeamBeam) && !mPhotonBeamsArray.empty()) || ((mVersion & kPointBeam) && !mLightVertices.empty()))
+				{
+					CalculatePhotonContributions(camID);
+				}
 		}
 
         mIterations++;
@@ -292,8 +300,11 @@ private:
     // Photon mapping methods
     //////////////////////////////////////////////////////////////////////////
 
-	void CalculatePhotonContributions(const int resX, const int resY)
+	void CalculatePhotonContributions(const int aCameraID)
 	{
+		Camera &cam = *mScene.mCameras[aCameraID];
+		const int resX = int(cam.mResolution.get(0));
+		const int resY = int(cam.mResolution.get(1));
 		UPBP_ASSERT( mVersion & kPhotons );
 		
 		if( mMaxPathLength > 1 )
@@ -322,12 +333,12 @@ private:
 			const Vec2f sample = Vec2f(float(x), float(y)) + mRng.GetVec2f();
 
 			// Create ray through the sample
-			Ray ray = mScene.mCamera.GenerateRay(sample);
+			Ray ray = cam.GenerateRay(sample);
 			Isect isect(1e36f);
 
 			// Init the boundary stack with the global medium and add enclosing material and medium if present
 			mScene.InitBoundaryStack(mBoundaryStack);
-			if (mScene.mCamera.mMatID != -1 && mScene.mCamera.mMedID != -1) mScene.AddToBoundaryStack(mScene.mCamera.mMatID, mScene.mCamera.mMedID, mBoundaryStack);
+			if (cam.mMatID != -1 && cam.mMedID != -1) mScene.AddToBoundaryStack(cam.mMatID, cam.mMedID, mBoundaryStack);
 
 			bool  originInMedium  = false;
 			float rayLength;
@@ -389,7 +400,7 @@ private:
 				UPBP_ASSERT( !volumeRadiance.isNanInfNeg() );
 			}
 
-			mFramebuffer.AddColor(sample, surfaceRadiance + volumeRadiance);
+			(*mFramebuffers[aCameraID]).AddColor(sample, surfaceRadiance + volumeRadiance);
 		}
 
 		mTimer.Stop();
@@ -455,13 +466,14 @@ private:
     // Computes contribution of light sample to camera by splatting is onto the
     // framebuffer. Multiplies by throughput (obviously, as nothing is returned).
     void ConnectToCamera(
+		const int                        aCameraID,
         const SubPathState               &aLightState,
         const Pos                        &aHitpoint,
         const BSDF                       &aLightBSDF,
 		const Isect                      &isect)
     {
 		// Get camera and direction to it
-        const Camera &camera  = mScene.mCamera;
+        const Camera &camera  = *mScene.mCameras[aCameraID];
 		Dir directionToCamera = camera.mOrigin - aHitpoint;
 
         // Check point is in front of camera
@@ -516,7 +528,7 @@ private:
 			if (contrib.isBlackOrNegative())
 				return;
 
-            mFramebuffer.AddColor(imagePos, contrib);
+            (*mFramebuffers[aCameraID]).AddColor(imagePos, contrib);
         }
     }
 

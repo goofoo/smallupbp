@@ -30,12 +30,12 @@
 #include "Misc\Config.hxx"
 
 // Output image in continuous outputting
-void continuousOutput(const Config &aConfig, int iter, Framebuffer & accumFrameBuffer, Framebuffer & outputFrameBuffer, AbstractRenderer* renderer, const std::string & name, const std::string & ext, char * filename)
+void continuousOutput(const int aCameraID, const Config &aConfig, int iter, Framebuffer & accumFrameBuffer, Framebuffer & outputFrameBuffer, AbstractRenderer* renderer, const std::string & name, const std::string & ext, char * filename)
 {
 	if (aConfig.mContinuousOutput > 0)
 	{
-		accumFrameBuffer.Add(renderer->GetFramebufferUnscaled());
-		renderer->GetFramebufferUnscaled().Clear();
+		accumFrameBuffer.Add(renderer->GetFramebufferUnscaled(aCameraID));
+		renderer->GetFramebufferUnscaled(aCameraID).Clear();
 		if (iter % aConfig.mContinuousOutput == 0)
 		{
 			outputFrameBuffer.Clear();
@@ -75,15 +75,24 @@ float render(
         renderers[i]->mMaxPathLength = aConfig.mMaxPathLength;
         renderers[i]->mMinPathLength = aConfig.mMinPathLength;
 		renderers[i]->SetupDebugImages(aConfig.mDebugImages);
-		renderers[i]->SetupBeamDensity(aConfig.mBeamDensType, aConfig.mScene->mCamera.mResolution, aConfig.mBeamDensMax);
+		for (size_t camID = 0; camID < aConfig.mNumCameras; camID++)
+		{
+			renderers[i]->SetupBeamDensity(aConfig.mBeamDensType, (aConfig.mScene->mCameras[camID])->mResolution, aConfig.mBeamDensMax);
+		}
     }
 
     clock_t startT = clock();
     int iter = 0;
 
-	Framebuffer accumFrameBuffer, outputFrameBuffer;
-	accumFrameBuffer.Setup(aConfig.mResolution);
-	outputFrameBuffer.Setup(aConfig.mResolution);
+	std::vector<Framebuffer *> accumFrameBuffers;
+	std::vector<Framebuffer *> outputFrameBuffers;
+	for (size_t i = 0; i < aConfig.mNumCameras; i++)
+	{
+		accumFrameBuffers.push_back(new Framebuffer());
+		accumFrameBuffers[i]->Setup(aConfig.mResolution);
+		outputFrameBuffers.push_back(new Framebuffer());
+		outputFrameBuffers[i]->Setup(aConfig.mResolution);
+	}
 	std::string name = aConfig.mOutputName.substr(0, aConfig.mOutputName.length() - 4);
 	std::string ext = aConfig.mOutputName.substr(aConfig.mOutputName.length() - 3, 3);
 	char filename[1024]; // Must be shared, otherwise critical section fails
@@ -93,7 +102,7 @@ float render(
     if(aConfig.mMaxTime > 0)
     {
         // Time based loop
-#pragma omp parallel shared(iter,accumFrameBuffer,outputFrameBuffer,name,ext,filename)
+#pragma omp parallel shared(iter,accumFrameBuffers,outputFrameBuffers,name,ext,filename)
         while(clock() < startT + aConfig.mMaxTime*CLOCKS_PER_SEC)
         {
             int threadId = omp_get_thread_num();
@@ -102,7 +111,10 @@ float render(
 #pragma omp critical
 			{
 				iter++; // counts number of iterations
-				continuousOutput(aConfig, iter, accumFrameBuffer, outputFrameBuffer, renderers[threadId], name, ext, filename);
+				for (size_t i = 0; i < aConfig.mNumCameras; i++)
+				{
+					continuousOutput(i, aConfig, iter, *accumFrameBuffers[i], *outputFrameBuffers[i], renderers[threadId], name, ext, filename);
+				}
 			}
         }
     }
@@ -110,7 +122,7 @@ float render(
     {
         // Iterations based loop
 		int cnt = 0, p = -1;
-#pragma omp parallel for shared(cnt,p,accumFrameBuffer,outputFrameBuffer,name,ext,filename)
+#pragma omp parallel for shared(cnt,p,accumFrameBuffers,outputFrameBuffers,name,ext,filename)
         for(iter=0; iter < aConfig.mIterations; iter++)
         {
             int threadId = omp_get_thread_num();
@@ -124,7 +136,10 @@ float render(
 					p = percent;
 					std::cout << percent << "%" << std::endl;
 				}
-				continuousOutput(aConfig, cnt, accumFrameBuffer, outputFrameBuffer, renderers[threadId], name, ext,filename);
+				for (size_t i = 0; i < aConfig.mNumCameras; i++)
+				{
+					continuousOutput(i, aConfig, cnt, *accumFrameBuffers[i], *outputFrameBuffers[i], renderers[threadId], name, ext, filename);
+				}
 			}
         }
 		iter = aConfig.mIterations;
@@ -135,12 +150,12 @@ float render(
     if(oUsedIterations)
         *oUsedIterations = iter+1;
 
-	for (int ci = 0; ci < aConfig.mNumCameras; ci++)
+	for (size_t camID = 0; camID < aConfig.mNumCameras; camID++)
 	{
 		int usedRenderers = 0;
 
 		aConfig.mCameraTracingTime = 0;
-		aConfig.mBeamDensity.Setup(aConfig.mBeamDensType, aConfig.mScene->mCamera.mResolution, aConfig.mBeamDensMax);
+		aConfig.mBeamDensity.Setup(aConfig.mBeamDensType, (aConfig.mScene->mCameras[camID])->mResolution, aConfig.mBeamDensMax);
 
 		// Not all created renderers had to have been used.
 		// Those must not participate in accumulation.
@@ -153,13 +168,13 @@ float render(
 			{
 				if (usedRenderers == 0)
 				{
-					renderers[i]->GetFramebuffer(*aConfig.mFramebuffers[ci]);
+					renderers[i]->GetFramebuffer(camID, *aConfig.mFramebuffers[camID]);
 				}
 				else
 				{
 					Framebuffer tmp;
-					renderers[i]->GetFramebuffer(tmp);
-					aConfig.mFramebuffers[ci]->Add(tmp);
+					renderers[i]->GetFramebuffer(camID, tmp);
+					aConfig.mFramebuffers[camID]->Add(tmp);
 				}
 			}
 
@@ -174,12 +189,12 @@ float render(
 		if (aConfig.mContinuousOutput <= 0)
 		{
 			// Scale framebuffer by the number of used renderers
-			aConfig.mFramebuffers[ci]->Scale(1.f / usedRenderers);
+			aConfig.mFramebuffers[camID]->Scale(1.f / usedRenderers);
 		}
 		else
 		{
-			*aConfig.mFramebuffers[ci] = accumFrameBuffer;
-			aConfig.mFramebuffers[ci]->Scale(1.f / iter);
+			*aConfig.mFramebuffers[camID] = *accumFrameBuffers[camID];
+			aConfig.mFramebuffers[camID]->Scale(1.f / iter);
 		}
 	}
 

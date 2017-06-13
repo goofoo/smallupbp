@@ -283,255 +283,261 @@ public:
 
     virtual void RunIteration(int aIteration)
     {
-        // While we have the same number of pixels (camera paths)
-        // and light paths, we do keep them separate for clarity reasons
-        const int resX = int(mScene.mCamera.mResolution.get(0));
-        const int resY = int(mScene.mCamera.mResolution.get(1));
-        const int pathCount = resX * resY;
-        mScreenPixelCount = float(resX * resY);
-        mLightSubPathCount   = float(resX * resY);
+		for (size_t camID = 0; camID < mScene.mCameras.size(); camID++)
+		{
+			Camera &cam = *mScene.mCameras[camID];
+			Framebuffer &fbuffer = *mFramebuffers[camID];
 
-        // Setup our radius, 1st iteration has aIteration == 0, thus offset
-        float radius = mBaseRadius;
-        radius /= std::pow(float(aIteration + 1), 0.5f * (1 - mRadiusAlpha));
-        // Purely for numeric stability
-        radius = std::max(radius, 1e-7f);
-        const float radiusSqr = Utils::sqr(radius);
+			// While we have the same number of pixels (camera paths)
+			// and light paths, we do keep them separate for clarity reasons
+			const int resX = int(cam.mResolution.get(0));
+			const int resY = int(cam.mResolution.get(1));
+			const int pathCount = resX * resY;
+			mScreenPixelCount = float(resX * resY);
+			mLightSubPathCount = float(resX * resY);
 
-        // Factor used to normalize vertex merging contribution.
-        // We divide the summed up energy by disk radius and number of light paths
-        mVmNormalization = 1.f / (radiusSqr * PI_F * mLightSubPathCount);
+			// Setup our radius, 1st iteration has aIteration == 0, thus offset
+			float radius = mBaseRadius;
+			radius /= std::pow(float(aIteration + 1), 0.5f * (1 - mRadiusAlpha));
+			// Purely for numeric stability
+			radius = std::max(radius, 1e-7f);
+			const float radiusSqr = Utils::sqr(radius);
 
-        // MIS weight constant [tech. rep. (20)], with n_VC = 1 and n_VM = mLightPathCount
-        const float etaVCM = (PI_F * radiusSqr) * mLightSubPathCount;
-        mMisVmWeightFactor = mUseVM ? Mis(etaVCM)       : 0.f;
-        mMisVcWeightFactor = mUseVC ? Mis(1.f / etaVCM) : 0.f;
+			// Factor used to normalize vertex merging contribution.
+			// We divide the summed up energy by disk radius and number of light paths
+			mVmNormalization = 1.f / (radiusSqr * PI_F * mLightSubPathCount);
 
-        // Clear path ends, nothing ends anywhere
-        mPathEnds.resize(pathCount);
-        memset(&mPathEnds[0], 0, mPathEnds.size() * sizeof(int));
+			// MIS weight constant [tech. rep. (20)], with n_VC = 1 and n_VM = mLightPathCount
+			const float etaVCM = (PI_F * radiusSqr) * mLightSubPathCount;
+			mMisVmWeightFactor = mUseVM ? Mis(etaVCM) : 0.f;
+			mMisVcWeightFactor = mUseVC ? Mis(1.f / etaVCM) : 0.f;
 
-        // Remove all light vertices and reserve space for some
-        mLightVertices.reserve(pathCount);
-        mLightVertices.clear();
+			// Clear path ends, nothing ends anywhere
+			mPathEnds.resize(pathCount);
+			memset(&mPathEnds[0], 0, mPathEnds.size() * sizeof(int));
 
-        //////////////////////////////////////////////////////////////////////////
-        // Generate light paths
-        //////////////////////////////////////////////////////////////////////////
-		for(int pathIdx = 0; (pathIdx < pathCount) &&  mScene.GetLightCount() > 0 && mMaxPathLength > 1; pathIdx++)
-        {			
-			SubPathState lightState;
-            GenerateLightSample(lightState);
+			// Remove all light vertices and reserve space for some
+			mLightVertices.reserve(pathCount);
+			mLightVertices.clear();
 
-            //////////////////////////////////////////////////////////////////////////
-            // Trace light path
-            for(;; ++lightState.mPathLength)
-            {
-                Ray ray(lightState.mOrigin, lightState.mDirection);
-                Isect isect(1e36f);
+			//////////////////////////////////////////////////////////////////////////
+			// Generate light paths
+			//////////////////////////////////////////////////////////////////////////
+			for (int pathIdx = 0; (pathIdx < pathCount) && mScene.GetLightCount() > 0 && mMaxPathLength > 1; pathIdx++)
+			{
+				SubPathState lightState;
+				GenerateLightSample(lightState);
 
-                if(!mScene.Intersect(ray, isect, lightState.mBoundaryStack))
-                    break;
+				//////////////////////////////////////////////////////////////////////////
+				// Trace light path
+				for (;; ++lightState.mPathLength)
+				{
+					Ray ray(lightState.mOrigin, lightState.mDirection);
+					Isect isect(1e36f);
 
-                const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+					if (!mScene.Intersect(ray, isect, lightState.mBoundaryStack))
+						break;
 
-				BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
-                if(!bsdf.IsValid())
-                    break;
+					const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
 
-                // Update the MIS quantities before storing them at the vertex.
-                // These updates follow the initialization in GenerateLightSample() or
-                // SampleScattering(), and together implement equations [tech. rep. (31)-(33)]
-                // or [tech. rep. (34)-(36)], respectively.
-                {
-                    // Infinite lights use MIS handled via solid angle integration,
-                    // so do not divide by the distance for such lights [tech. rep. Section 5.1]
-                    if(lightState.mPathLength > 1 || lightState.mIsFiniteLight == 1)
-                        lightState.dVCM *= Mis(Utils::sqr(isect.mDist));
+					BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
+					if (!bsdf.IsValid())
+						break;
 
-                    lightState.dVCM /= Mis(std::abs(bsdf.CosThetaFix()));
-                    lightState.dVC  /= Mis(std::abs(bsdf.CosThetaFix()));
-                    lightState.dVM  /= Mis(std::abs(bsdf.CosThetaFix()));
-                }
+					// Update the MIS quantities before storing them at the vertex.
+					// These updates follow the initialization in GenerateLightSample() or
+					// SampleScattering(), and together implement equations [tech. rep. (31)-(33)]
+					// or [tech. rep. (34)-(36)], respectively.
+					{
+						// Infinite lights use MIS handled via solid angle integration,
+						// so do not divide by the distance for such lights [tech. rep. Section 5.1]
+						if (lightState.mPathLength > 1 || lightState.mIsFiniteLight == 1)
+							lightState.dVCM *= Mis(Utils::sqr(isect.mDist));
 
-                // Store vertex, unless BSDF is purely specular, which prevents
-                // vertex connections and merging
-                if(!bsdf.IsDelta() && (mUseVC || mUseVM))
-                {
-                    PathVertex lightVertex;
-                    lightVertex.mHitpoint   = hitPoint;
-                    lightVertex.mThroughput = lightState.mThroughput;
-                    lightVertex.mPathLength = lightState.mPathLength;
-                    lightVertex.mBSDF       = bsdf;
+						lightState.dVCM /= Mis(std::abs(bsdf.CosThetaFix()));
+						lightState.dVC /= Mis(std::abs(bsdf.CosThetaFix()));
+						lightState.dVM /= Mis(std::abs(bsdf.CosThetaFix()));
+					}
 
-                    lightVertex.dVCM = lightState.dVCM;
-                    lightVertex.dVC  = lightState.dVC;
-                    lightVertex.dVM  = lightState.dVM;
+					// Store vertex, unless BSDF is purely specular, which prevents
+					// vertex connections and merging
+					if (!bsdf.IsDelta() && (mUseVC || mUseVM))
+					{
+						PathVertex lightVertex;
+						lightVertex.mHitpoint = hitPoint;
+						lightVertex.mThroughput = lightState.mThroughput;
+						lightVertex.mPathLength = lightState.mPathLength;
+						lightVertex.mBSDF = bsdf;
 
-                    mLightVertices.push_back(lightVertex);
-                }
+						lightVertex.dVCM = lightState.dVCM;
+						lightVertex.dVC = lightState.dVC;
+						lightVertex.dVM = lightState.dVM;
 
-                // Connect to camera, unless BSDF is purely specular
-                if(!bsdf.IsDelta() && (mUseVC || mLightTraceOnly))
-                {
-                    if(lightState.mPathLength + 1 >= mMinPathLength)
-                        ConnectToCamera(lightState, hitPoint, bsdf);
-                }
+						mLightVertices.push_back(lightVertex);
+					}
 
-                // Terminate if the path would become too long after scattering
-                if(lightState.mPathLength + 2 > mMaxPathLength)
-                    break;
+					// Connect to camera, unless BSDF is purely specular
+					if (!bsdf.IsDelta() && (mUseVC || mLightTraceOnly))
+					{
+						if (lightState.mPathLength + 1 >= mMinPathLength)
+							ConnectToCamera(camID, lightState, hitPoint, bsdf);
+					}
 
-                // Continue random walk
-                if(!SampleScattering(bsdf, hitPoint, lightState, isect))
-                    break;
-            }
+					// Terminate if the path would become too long after scattering
+					if (lightState.mPathLength + 2 > mMaxPathLength)
+						break;
 
-            mPathEnds[pathIdx] = (int)mLightVertices.size();
-        }
+					// Continue random walk
+					if (!SampleScattering(bsdf, hitPoint, lightState, isect))
+						break;
+				}
 
-        //////////////////////////////////////////////////////////////////////////
-        // Build hash grid
-        //////////////////////////////////////////////////////////////////////////
+				mPathEnds[pathIdx] = (int)mLightVertices.size();
+			}
 
-        // Only build grid when merging (VCM, BPM, and PPM)
-        if(mUseVM)
-        {
-            // The number of cells is somewhat arbitrary, but seems to work ok
-            mHashGrid.Reserve(pathCount);
-            mHashGrid.Build(mLightVertices, radius);
-        }
+			//////////////////////////////////////////////////////////////////////////
+			// Build hash grid
+			//////////////////////////////////////////////////////////////////////////
 
-        //////////////////////////////////////////////////////////////////////////
-        // Generate camera paths
-        //////////////////////////////////////////////////////////////////////////
+			// Only build grid when merging (VCM, BPM, and PPM)
+			if (mUseVM)
+			{
+				// The number of cells is somewhat arbitrary, but seems to work ok
+				mHashGrid.Reserve(pathCount);
+				mHashGrid.Build(mLightVertices, radius);
+			}
 
-        // Unless rendering with traditional light tracing
-        for(int pathIdx = 0; (pathIdx < pathCount) && (!mLightTraceOnly); ++pathIdx)
-        {			
-			SubPathState cameraState;
-            const Vec2f screenSample = GenerateCameraSample(pathIdx, cameraState);
-            Rgb color(0);
-			
-			//////////////////////////////////////////////////////////////////////
-            // Trace camera path
-            for(;; ++cameraState.mPathLength)
-            {
-				Ray ray(cameraState.mOrigin, cameraState.mDirection);
-                Isect isect(1e36f);
+			//////////////////////////////////////////////////////////////////////////
+			// Generate camera paths
+			//////////////////////////////////////////////////////////////////////////
 
-                // Get radiance from environment
-				if(!mScene.Intersect(ray, isect, cameraState.mBoundaryStack))
-                {
-                    if(mScene.GetBackground() != NULL)
-                    {
-                        if(cameraState.mPathLength >= mMinPathLength)
-                        {
-                            color += cameraState.mThroughput *
-                                GetLightRadiance(mScene.GetBackground(), cameraState,
-                                Pos(0), ray.direction);
-                        }
-                    }
+			// Unless rendering with traditional light tracing
+			for (int pathIdx = 0; (pathIdx < pathCount) && (!mLightTraceOnly); ++pathIdx)
+			{
+				SubPathState cameraState;
+				const Vec2f screenSample = GenerateCameraSample(camID, pathIdx, cameraState);
+				Rgb color(0);
 
-                    break;
-                }
+				//////////////////////////////////////////////////////////////////////
+				// Trace camera path
+				for (;; ++cameraState.mPathLength)
+				{
+					Ray ray(cameraState.mOrigin, cameraState.mDirection);
+					Isect isect(1e36f);
 
-				const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+					// Get radiance from environment
+					if (!mScene.Intersect(ray, isect, cameraState.mBoundaryStack))
+					{
+						if (mScene.GetBackground() != NULL)
+						{
+							if (cameraState.mPathLength >= mMinPathLength)
+							{
+								color += cameraState.mThroughput *
+									GetLightRadiance(mScene.GetBackground(), cameraState,
+										Pos(0), ray.direction);
+							}
+						}
 
-				BSDF bsdf(ray, isect, mScene, BSDF::kFromCamera,mScene.RelativeIOR(isect, cameraState.mBoundaryStack));
-                if(!bsdf.IsValid())
-                    break;
+						break;
+					}
 
-                // Update the MIS quantities, following the initialization in
-                // GenerateLightSample() or SampleScattering(). Implement equations
-                // [tech. rep. (31)-(33)] or [tech. rep. (34)-(36)], respectively.
-                {
-                    cameraState.dVCM *= Mis(Utils::sqr(isect.mDist));
-                    cameraState.dVCM /= Mis(std::abs(bsdf.CosThetaFix()));
-                    cameraState.dVC  /= Mis(std::abs(bsdf.CosThetaFix()));
-                    cameraState.dVM  /= Mis(std::abs(bsdf.CosThetaFix()));
-                }
+					const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
 
-                // Light source has been hit; terminate afterwards, since
-                // our light sources do not have reflective properties
-				if(isect.mLightID >= 0)
-                {
-                    const AbstractLight *light = mScene.GetLightPtr(isect.mLightID);
-                
-                    if(cameraState.mPathLength >= mMinPathLength)
-                    {
-                        color += cameraState.mThroughput *
-                            GetLightRadiance(light, cameraState, hitPoint, ray.direction);
-                    }
-                    
-                    break;
-                }
+					BSDF bsdf(ray, isect, mScene, BSDF::kFromCamera, mScene.RelativeIOR(isect, cameraState.mBoundaryStack));
+					if (!bsdf.IsValid())
+						break;
 
-                // Terminate if eye sub-path is too long for connections or merging
-                if(cameraState.mPathLength >= mMaxPathLength)
-                    break;
+					// Update the MIS quantities, following the initialization in
+					// GenerateLightSample() or SampleScattering(). Implement equations
+					// [tech. rep. (31)-(33)] or [tech. rep. (34)-(36)], respectively.
+					{
+						cameraState.dVCM *= Mis(Utils::sqr(isect.mDist));
+						cameraState.dVCM /= Mis(std::abs(bsdf.CosThetaFix()));
+						cameraState.dVC /= Mis(std::abs(bsdf.CosThetaFix()));
+						cameraState.dVM /= Mis(std::abs(bsdf.CosThetaFix()));
+					}
 
-                ////////////////////////////////////////////////////////////////
-                // Vertex connection: Connect to a light source
-                if(!bsdf.IsDelta() && mUseVC && mScene.GetLightCount() > 0)
-                {
-                    if(cameraState.mPathLength + 1>= mMinPathLength)
-                    {
-                        color += cameraState.mThroughput *
-                            DirectIllumination(cameraState, hitPoint, bsdf);
-                    }
-                }
+					// Light source has been hit; terminate afterwards, since
+					// our light sources do not have reflective properties
+					if (isect.mLightID >= 0)
+					{
+						const AbstractLight *light = mScene.GetLightPtr(isect.mLightID);
 
-                ////////////////////////////////////////////////////////////////
-                // Vertex connection: Connect to light vertices
-                if(!bsdf.IsDelta() && mUseVC)
-                {
-                    // For VC, each light sub-path is assigned to a particular eye
-                    // sub-path, as in traditional BPT. It is also possible to
-                    // connect to vertices from any light path, but MIS should
-                    // be revisited.
-                    const Vec2i range(
-                        (pathIdx == 0) ? 0 : mPathEnds[pathIdx-1],
-                        mPathEnds[pathIdx]);
+						if (cameraState.mPathLength >= mMinPathLength)
+						{
+							color += cameraState.mThroughput *
+								GetLightRadiance(light, cameraState, hitPoint, ray.direction);
+						}
 
-                    for(int i = range[0]; i < range[1]; i++)
-                    {
-                        const PathVertex &lightVertex = mLightVertices[i];
+						break;
+					}
 
-                        if(lightVertex.mPathLength + 1 +
-                           cameraState.mPathLength < mMinPathLength)
-                            continue;
+					// Terminate if eye sub-path is too long for connections or merging
+					if (cameraState.mPathLength >= mMaxPathLength)
+						break;
 
-                        // Light vertices are stored in increasing path length
-                        // order; once we go above the max path length, we can
-                        // skip the rest
-                        if(lightVertex.mPathLength + 1 +
-                           cameraState.mPathLength > mMaxPathLength)
-                            break;
+					////////////////////////////////////////////////////////////////
+					// Vertex connection: Connect to a light source
+					if (!bsdf.IsDelta() && mUseVC && mScene.GetLightCount() > 0)
+					{
+						if (cameraState.mPathLength + 1 >= mMinPathLength)
+						{
+							color += cameraState.mThroughput *
+								DirectIllumination(cameraState, hitPoint, bsdf);
+						}
+					}
 
-                        color += cameraState.mThroughput * lightVertex.mThroughput *
-                            ConnectVertices(lightVertex, bsdf, hitPoint, cameraState);
-                    }
-                }
+					////////////////////////////////////////////////////////////////
+					// Vertex connection: Connect to light vertices
+					if (!bsdf.IsDelta() && mUseVC)
+					{
+						// For VC, each light sub-path is assigned to a particular eye
+						// sub-path, as in traditional BPT. It is also possible to
+						// connect to vertices from any light path, but MIS should
+						// be revisited.
+						const Vec2i range(
+							(pathIdx == 0) ? 0 : mPathEnds[pathIdx - 1],
+							mPathEnds[pathIdx]);
 
-                ////////////////////////////////////////////////////////////////
-                // Vertex merging: Merge with light vertices
-                if(!bsdf.IsDelta() && mUseVM)
-                {
-                    RangeQuery query(*this, hitPoint, bsdf, cameraState);
-                    mHashGrid.Process(mLightVertices, query);
-                    color += cameraState.mThroughput * mVmNormalization * query.GetContrib();
+						for (int i = range[0]; i < range[1]; i++)
+						{
+							const PathVertex &lightVertex = mLightVertices[i];
 
-                    // PPM merges only at the first non-specular surface from camera
-                    if(mPpm) break;
-                }
+							if (lightVertex.mPathLength + 1 +
+								cameraState.mPathLength < mMinPathLength)
+								continue;
 
-                if(!SampleScattering(bsdf, hitPoint, cameraState, isect))
-                    break;
-            }
+							// Light vertices are stored in increasing path length
+							// order; once we go above the max path length, we can
+							// skip the rest
+							if (lightVertex.mPathLength + 1 +
+								cameraState.mPathLength > mMaxPathLength)
+								break;
 
-            mFramebuffer.AddColor(screenSample, color);
-        }
+							color += cameraState.mThroughput * lightVertex.mThroughput *
+								ConnectVertices(lightVertex, bsdf, hitPoint, cameraState);
+						}
+					}
+
+					////////////////////////////////////////////////////////////////
+					// Vertex merging: Merge with light vertices
+					if (!bsdf.IsDelta() && mUseVM)
+					{
+						RangeQuery query(*this, hitPoint, bsdf, cameraState);
+						mHashGrid.Process(mLightVertices, query);
+						color += cameraState.mThroughput * mVmNormalization * query.GetContrib();
+
+						// PPM merges only at the first non-specular surface from camera
+						if (mPpm) break;
+					}
+
+					if (!SampleScattering(bsdf, hitPoint, cameraState, isect))
+						break;
+				}
+
+				fbuffer.AddColor(screenSample, color);
+			}
+		}
 
         mIterations++;
     }
@@ -551,10 +557,11 @@ private:
 
     // Generates new camera sample given a pixel index
     Vec2f GenerateCameraSample(
+		const int    aCameraID,
         const int    aPixelIndex,
         SubPathState &oCameraState)
     {
-        const Camera &camera = mScene.mCamera;
+        const Camera &camera = *mScene.mCameras[aCameraID];
         const int resX = int(camera.mResolution.get(0));
         const int resY = int(camera.mResolution.get(1));
 
@@ -852,11 +859,12 @@ private:
     // Computes contribution of light sample to camera by splatting is onto the
     // framebuffer. Multiplies by throughput (obviously, as nothing is returned).
     void ConnectToCamera(
+		const int          aCameraID,
         const SubPathState &aLightState,
         const Pos          &aHitpoint,
         const BSDF         &aBSDF)
     {
-        const Camera &camera  = mScene.mCamera;
+        const Camera &camera  = *mScene.mCameras[aCameraID];
 		Dir directionToCamera = camera.mOrigin - aHitpoint;
 
         // Check point is in front of camera
@@ -919,7 +927,7 @@ private:
             if(mScene.Occluded(aHitpoint, directionToCamera, distance, aLightState.mBoundaryStack))
                 return;
 
-            mFramebuffer.AddColor(imagePos, contrib);
+            (*mFramebuffers[aCameraID]).AddColor(imagePos, contrib);
         }
     }
 

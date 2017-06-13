@@ -399,787 +399,793 @@ public:
 
 	virtual void RunIteration(int aIteration)
 	{
-		// Get path count, one path for each pixel
-		const int resX = int(mScene.mCamera.mResolution.get(0));
-		const int resY = int(mScene.mCamera.mResolution.get(1));
-		int pathCountC = resX * resY;
-		int pathCountL = mPathCountPerIter;
-
-		// We don't have the same number of pixels (camera paths)
-		// and light paths
-		mScreenPixelCount = float(pathCountC);
-		mLightSubPathCount = mPathCountPerIter;
-
-		if (!(mEstimatorTechniques & SPECULAR_ONLY))
+		for (size_t camID = 0; camID < mScene.mCameras.size(); camID++)
 		{
-			// To make list of photons and beams same in previous and compatible mode
-			mRng = Rng(mBaseSeed + aIteration);
-			mBB1DPhotonBeams.mSeed = mBaseSeed + aIteration;
+			Camera &cam = *mScene.mCameras[camID];
+			Framebuffer &fbuffer = *mFramebuffers[camID];
 
-			if (mBB1DUsedLightSubPathCount < 0)
-				mBB1DUsedLightSubPathCount = std::floor(-mBB1DUsedLightSubPathCount * mLightSubPathCount);
+			// Get path count, one path for each pixel
+			const int resX = int(cam.mResolution.get(0));
+			const int resY = int(cam.mResolution.get(1));
+			int pathCountC = resX * resY;
+			int pathCountL = mPathCountPerIter;
 
-			// Radius reduction (1st iteration has aIteration == 0, thus offset)
-			const float effectiveIteration = 1 + aIteration * mLightSubPathCount / mRefPathCountPerIter;
-			// SURF
-			float radiusSurf = mSurfRadiusInitial * std::pow(effectiveIteration, (mSurfRadiusAlpha - 1) * 0.5f);
-			radiusSurf = std::max(radiusSurf, 1e-7f); // Purely for numeric stability
-			const float radiusSurfSqr = Utils::sqr(radiusSurf);
-			// PP3D
-			float radiusPP3D = mPP3DRadiusInitial * std::pow(effectiveIteration, (mPP3DRadiusAlpha - 1) * (1.f / 3.f));
-			radiusPP3D = std::max(radiusPP3D, 1e-7f); // Purely for numeric stability
-			const float radiusPP3DCube = Utils::sqr(radiusPP3D) * radiusPP3D;
-			// PB2D
-			float radiusPB2D = mPB2DRadiusInitial * std::pow(effectiveIteration, (mPB2DRadiusAlpha - 1) * 0.5f);
-			radiusPB2D = std::max(radiusPB2D, 1e-7f); // Purely for numeric stability
-			const float radiusPB2DSqr = Utils::sqr(radiusPB2D);
-			// BB1D
-			float radiusBB1D = mBB1DRadiusInitial * std::pow(1 + aIteration * mBB1DUsedLightSubPathCount / mRefPathCountPerIter, mBB1DRadiusAlpha - 1);
-			radiusBB1D = std::max(radiusBB1D, 1e-7f); // Purely for numeric stability
+			// We don't have the same number of pixels (camera paths)
+			// and light paths
+			mScreenPixelCount = float(pathCountC);
+			mLightSubPathCount = mPathCountPerIter;
 
-			// Constant for decision whether to store beams or not
-			mBB1DMinMFP = mBB1DBeamStorageFactor * 0.5f * PI_F * radiusBB1D;
-			if (mVerbose) std::cout << "min mfp: " << mBB1DMinMFP << std::endl;
-
-			const float etaSurf = (PI_F * radiusSurfSqr) * mLightSubPathCount;
-			const float etaPP3D = (4.0f / 3.0f) * (PI_F * radiusPP3DCube) * mLightSubPathCount;
-			const float etaPB2D = (PI_F * radiusPB2DSqr) * mLightSubPathCount;
-			const float etaBB1D = 0.5f * radiusBB1D * mBB1DUsedLightSubPathCount;
-
-			// Factor used to normalize vertex merging contribution.
-			// We divide the summed up energy by disk radius and number of light paths
-			mSurfNormalization = 1.f / etaSurf;
-			mPP3DNormalization = 1.f / etaPP3D;
-			mPB2DNormalization = 1.f / mLightSubPathCount;
-			mBB1DNormalization = 1.f / mBB1DUsedLightSubPathCount;
-
-			// MIS weight constants
-			mSurfMisWeightFactor = etaSurf;
-			mPP3DMisWeightFactor = etaPP3D;
-			mPB2DMisWeightFactor = etaPB2D;
-			mBB1DMisWeightFactor = etaBB1D;
-
-			// Clear path ends, nothing ends anywhere
-			mPathEnds.resize(pathCountL);
-			memset(&mPathEnds[0], 0, mPathEnds.size() * sizeof(int));
-
-			// Because of static mCameraVerticesMisData size
-			UPBP_ASSERT(mMaxPathLength < UPBP_CAMERA_MAXVERTS);
-
-			const float maxLightVerts = std::min(mLightSubPathCount * std::min((int)mMaxPathLength, UPBP_LIGHT_AVGVERTS), (float)mMaxMemoryPerThread / sizeof(UPBPLightVertex));
-			const float maxBeams = std::min(mBB1DUsedLightSubPathCount * std::min((int)mMaxPathLength, UPBP_LIGHT_AVGVERTS), (float)mMaxMemoryPerThread / sizeof(UPBPLightVertex));
-			
-			if (mVerbose)
-				std::cout << "allocating : " << ((int)maxLightVerts) << std::endl;
-			
-			// Remove all light vertices and reserve space for some		
-			mLightVertices.clear();
-			mLightVertices.reserve((int)maxLightVerts);
-			
-			if (mVerbose)
-				std::cout << "allocating : " << mLightVertices.capacity() << std::endl;
-			UPBP_ASSERT(mLightVertices.size() == 0 && mLightVertices.capacity() >= (int)maxLightVerts);
-
-			// Remove all photon beams and reserve space for some
-			mPhotonBeamsArray.clear();
-			mPhotonBeamsArray.reserve((int)maxBeams);
-			UPBP_ASSERT(mPhotonBeamsArray.size() == 0 && mPhotonBeamsArray.capacity() >= (int)maxBeams);
-
-			mLightVerticesOnSurfaceCount = 0;
-			mLightVerticesInMediumCount = 0;
-
-			//////////////////////////////////////////////////////////////////////////
-			// Generate light paths
-			//////////////////////////////////////////////////////////////////////////
-
-			if (mVerbose)
-				std::cout << " + tracing light sub-paths..." << std::endl;
-
-			mTimer.Start();
-
-			// If pure path tracing is used, there are no lights or only one path segment is allowed, light tracing step is skipped
-			if (mTraceLightPaths && mScene.GetLightCount() > 0 && mMaxPathLength > 1)
-			for (int pathIdx = 0; pathIdx < pathCountL; pathIdx++)
+			if (!(mEstimatorTechniques & SPECULAR_ONLY))
 			{
-				// Generate light path origin and direction
-				SubPathState lightState;
-				GenerateLightSample(pathIdx, lightState);
+				// To make list of photons and beams same in previous and compatible mode
+				mRng = Rng(mBaseSeed + aIteration);
+				mBB1DPhotonBeams.mSeed = mBaseSeed + aIteration;
 
-				// In attenuating media the ray can never travel from infinity
-				if (!lightState.mIsFiniteLight && mScene.GetGlobalMediumPtr()->HasAttenuation())
-				{
-					mPathEnds[pathIdx] = (int)mLightVertices.size();
-					continue;
-				}
+				if (mBB1DUsedLightSubPathCount < 0)
+					mBB1DUsedLightSubPathCount = std::floor(-mBB1DUsedLightSubPathCount * mLightSubPathCount);
 
-				// We assume that the light is on surface
-				bool originInMedium = false;
+				// Radius reduction (1st iteration has aIteration == 0, thus offset)
+				const float effectiveIteration = 1 + aIteration * mLightSubPathCount / mRefPathCountPerIter;
+				// SURF
+				float radiusSurf = mSurfRadiusInitial * std::pow(effectiveIteration, (mSurfRadiusAlpha - 1) * 0.5f);
+				radiusSurf = std::max(radiusSurf, 1e-7f); // Purely for numeric stability
+				const float radiusSurfSqr = Utils::sqr(radiusSurf);
+				// PP3D
+				float radiusPP3D = mPP3DRadiusInitial * std::pow(effectiveIteration, (mPP3DRadiusAlpha - 1) * (1.f / 3.f));
+				radiusPP3D = std::max(radiusPP3D, 1e-7f); // Purely for numeric stability
+				const float radiusPP3DCube = Utils::sqr(radiusPP3D) * radiusPP3D;
+				// PB2D
+				float radiusPB2D = mPB2DRadiusInitial * std::pow(effectiveIteration, (mPB2DRadiusAlpha - 1) * 0.5f);
+				radiusPB2D = std::max(radiusPB2D, 1e-7f); // Purely for numeric stability
+				const float radiusPB2DSqr = Utils::sqr(radiusPB2D);
+				// BB1D
+				float radiusBB1D = mBB1DRadiusInitial * std::pow(1 + aIteration * mBB1DUsedLightSubPathCount / mRefPathCountPerIter, mBB1DRadiusAlpha - 1);
+				radiusBB1D = std::max(radiusBB1D, 1e-7f); // Purely for numeric stability
+
+														  // Constant for decision whether to store beams or not
+				mBB1DMinMFP = mBB1DBeamStorageFactor * 0.5f * PI_F * radiusBB1D;
+				if (mVerbose) std::cout << "min mfp: " << mBB1DMinMFP << std::endl;
+
+				const float etaSurf = (PI_F * radiusSurfSqr) * mLightSubPathCount;
+				const float etaPP3D = (4.0f / 3.0f) * (PI_F * radiusPP3DCube) * mLightSubPathCount;
+				const float etaPB2D = (PI_F * radiusPB2DSqr) * mLightSubPathCount;
+				const float etaBB1D = 0.5f * radiusBB1D * mBB1DUsedLightSubPathCount;
+
+				// Factor used to normalize vertex merging contribution.
+				// We divide the summed up energy by disk radius and number of light paths
+				mSurfNormalization = 1.f / etaSurf;
+				mPP3DNormalization = 1.f / etaPP3D;
+				mPB2DNormalization = 1.f / mLightSubPathCount;
+				mBB1DNormalization = 1.f / mBB1DUsedLightSubPathCount;
+
+				// MIS weight constants
+				mSurfMisWeightFactor = etaSurf;
+				mPP3DMisWeightFactor = etaPP3D;
+				mPB2DMisWeightFactor = etaPB2D;
+				mBB1DMisWeightFactor = etaBB1D;
+
+				// Clear path ends, nothing ends anywhere
+				mPathEnds.resize(pathCountL);
+				memset(&mPathEnds[0], 0, mPathEnds.size() * sizeof(int));
+
+				// Because of static mCameraVerticesMisData size
+				UPBP_ASSERT(mMaxPathLength < UPBP_CAMERA_MAXVERTS);
+
+				const float maxLightVerts = std::min(mLightSubPathCount * std::min((int)mMaxPathLength, UPBP_LIGHT_AVGVERTS), (float)mMaxMemoryPerThread / sizeof(UPBPLightVertex));
+				const float maxBeams = std::min(mBB1DUsedLightSubPathCount * std::min((int)mMaxPathLength, UPBP_LIGHT_AVGVERTS), (float)mMaxMemoryPerThread / sizeof(UPBPLightVertex));
+
+				if (mVerbose)
+					std::cout << "allocating : " << ((int)maxLightVerts) << std::endl;
+
+				// Remove all light vertices and reserve space for some		
+				mLightVertices.clear();
+				mLightVertices.reserve((int)maxLightVerts);
+
+				if (mVerbose)
+					std::cout << "allocating : " << mLightVertices.capacity() << std::endl;
+				UPBP_ASSERT(mLightVertices.size() == 0 && mLightVertices.capacity() >= (int)maxLightVerts);
+
+				// Remove all photon beams and reserve space for some
+				mPhotonBeamsArray.clear();
+				mPhotonBeamsArray.reserve((int)maxBeams);
+				UPBP_ASSERT(mPhotonBeamsArray.size() == 0 && mPhotonBeamsArray.capacity() >= (int)maxBeams);
+
+				mLightVerticesOnSurfaceCount = 0;
+				mLightVerticesInMediumCount = 0;
 
 				//////////////////////////////////////////////////////////////////////////
-				// Trace light path
-				for (;; ++lightState.mPathLength)
+				// Generate light paths
+				//////////////////////////////////////////////////////////////////////////
+
+				if (mVerbose)
+					std::cout << " + tracing light sub-paths..." << std::endl;
+
+				mTimer.Start();
+
+				// If pure path tracing is used, there are no lights or only one path segment is allowed, light tracing step is skipped
+				if (mTraceLightPaths && mScene.GetLightCount() > 0 && mMaxPathLength > 1)
+					for (int pathIdx = 0; pathIdx < pathCountL; pathIdx++)
+					{
+						// Generate light path origin and direction
+						SubPathState lightState;
+						GenerateLightSample(pathIdx, lightState);
+
+						// In attenuating media the ray can never travel from infinity
+						if (!lightState.mIsFiniteLight && mScene.GetGlobalMediumPtr()->HasAttenuation())
+						{
+							mPathEnds[pathIdx] = (int)mLightVertices.size();
+							continue;
+						}
+
+						// We assume that the light is on surface
+						bool originInMedium = false;
+
+						//////////////////////////////////////////////////////////////////////////
+						// Trace light path
+						for (;; ++lightState.mPathLength)
+						{
+							// Prepare ray
+							Ray ray(lightState.mOrigin, lightState.mDirection);
+							Isect isect(1e36f);
+
+							// Trace ray
+							mVolumeSegments.clear();
+							mLiteVolumeSegments.clear();
+							bool intersected = mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, mVolumeSegments, mLiteVolumeSegments);
+
+							// Store beam if required
+							if (mMergeWithLightVerticesBB1D && pathIdx < mBB1DUsedLightSubPathCount)
+							{
+								AddBeams(ray, lightState.mThroughput, &mLightVertices.back(), originInMedium ? AbstractMedium::kOriginInMedium : 0, lightState.mLastPdfWInv);
+							}
+
+							if (!intersected)
+								break;
+
+							UPBP_ASSERT(isect.IsValid());
+
+							// Attenuate by intersected media (if any)
+							float raySamplePdf(1.0f);
+							float raySampleRevPdf(1.0f);
+							if (!mVolumeSegments.empty())
+							{
+								// PDF
+								raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
+								UPBP_ASSERT(raySamplePdf > 0);
+
+								// Reverse PDF
+								raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
+								UPBP_ASSERT(raySampleRevPdf > 0);
+
+								// Attenuation
+								lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
+							}
+
+							if (lightState.mThroughput.isBlackOrNegative())
+								break;
+
+							// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
+							BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
+
+							if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
+								break;
+
+							// Compute hitpoint
+							const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+
+							originInMedium = isect.IsInMedium();
+
+							// Store vertex
+							{
+								UPBPLightVertex lightVertex;
+								lightVertex.mHitpoint = hitPoint;
+								lightVertex.mThroughput = lightState.mThroughput;
+								lightVertex.mPathIdx = pathIdx;
+								lightVertex.mPathLength = lightState.mPathLength;
+								lightVertex.mInMedium = originInMedium;
+								lightVertex.mConnectable = !bsdf.IsDelta();
+								lightVertex.mIsFinite = true;
+								lightVertex.mBSDF = bsdf;
+
+								// Determine whether the vertex is in medium behind real geometry
+								lightVertex.mBehindSurf = false;
+								if (lightVertex.mInMedium && !lightState.mBoundaryStack.IsEmpty())
+								{
+									int matId = lightState.mBoundaryStack.Top().mMaterialId;
+									if (matId >= 0)
+									{
+										const Material& mat = mScene.GetMaterial(matId);
+										if (mat.mGeometryType != GeometryType::IMAGINARY)
+											lightVertex.mBehindSurf = true;
+									}
+								}
+
+								// Infinite lights use MIS handled via solid angle integration, so do not divide by the distance for such lights
+								const float distSq = (lightState.mPathLength > 1 || lightState.mIsFiniteLight == 1) ? Utils::sqr(isect.mDist) : 1.0f;
+								const float raySamplePdfInv = 1.0f / raySamplePdf;
+								lightVertex.mMisData.mPdfAInv = lightState.mLastPdfWInv * distSq * raySamplePdfInv / std::abs(bsdf.CosThetaFix());
+								lightVertex.mMisData.mRevPdfA = 1.0f;
+								lightVertex.mMisData.mRevPdfAWithoutBsdf = lightVertex.mMisData.mRevPdfA;
+								lightVertex.mMisData.mRaySamplePdfInv = raySamplePdfInv;
+								lightVertex.mMisData.mRaySampleRevPdfInv = 1.0f;
+								lightVertex.mMisData.mSinTheta = 0.0f;
+								lightVertex.mMisData.mCosThetaOut = 0.0f;
+								lightVertex.mMisData.mSurfMisWeightFactor = bsdf.IsOnSurface() ? mSurfMisWeightFactor : 0;
+								lightVertex.mMisData.mPP3DMisWeightFactor = bsdf.IsOnSurface() ? 0 : mPP3DMisWeightFactor;
+								lightVertex.mMisData.mPB2DMisWeightFactor = bsdf.IsOnSurface() ? 0 : mPB2DMisWeightFactor;
+								lightVertex.mMisData.mBB1DMisWeightFactor = bsdf.IsOnSurface() ? 0 : mBB1DMisWeightFactor;
+								lightVertex.mMisData.mBB1DBeamSelectionPdf = bsdf.IsOnSurface() ? 0 : 1;
+								lightVertex.mMisData.mIsDelta = bsdf.IsDelta();
+								lightVertex.mMisData.mIsOnLightSource = false;
+								lightVertex.mMisData.mIsSpecular = false;
+								lightVertex.mMisData.mInMediumWithBeams = bsdf.IsOnSurface() ? false : (!mMergeWithLightVerticesPB2D || bsdf.GetMedium()->GetMeanFreePath(hitPoint) > mBB1DMinMFP);
+
+								lightVertex.mMisData.mRaySamplePdfsRatio = 0.0f;
+								lightVertex.mMisData.mRaySampleRevPdfsRatio = 0.0f;
+								if (bsdf.IsInMedium())
+								{
+									if (bsdf.GetMedium()->IsHomogeneous())
+									{
+										lightVertex.mMisData.mRaySamplePdfsRatio = 1.0f / ((const HomogeneousMedium*)bsdf.GetMedium())->mMinPositiveAttenuationCoefComp();
+										lightVertex.mMisData.mRaySampleRevPdfsRatio = lightVertex.mMisData.mRaySamplePdfsRatio;
+									}
+									else
+									{
+										const float lastSegmentRayOverSamplePdf = bsdf.GetMedium()->RaySamplePdf(ray, mVolumeSegments.back().mDistMin, mVolumeSegments.back().mDistMax, 0);
+										const float lastSegmentRayInSamplePdf = mVolumeSegments.back().mRaySamplePdf; // We are in medium -> we know we have insampled
+										lightVertex.mMisData.mRaySamplePdfsRatio = lastSegmentRayOverSamplePdf / lastSegmentRayInSamplePdf;
+									}
+								}
+
+								// Update reverse PDFs of the previous vertex
+								mLightVertices.back().mMisData.mRevPdfA *= raySampleRevPdf / distSq;
+								mLightVertices.back().mMisData.mRevPdfAWithoutBsdf = mLightVertices.back().mMisData.mRevPdfA;
+								mLightVertices.back().mMisData.mRaySampleRevPdfInv = 1.0f / raySampleRevPdf;
+
+								if (mLightVertices.back().mBSDF.IsInMedium() && !mLightVertices.back().mBSDF.GetMedium()->IsHomogeneous()) // Homogeneous case was solved immediately when processing the vertex for the first time
+								{
+									float firstSegmentRayOverSampleRevPdf;
+									mLightVertices.back().mBSDF.GetMedium()->RaySamplePdf(ray, mVolumeSegments.front().mDistMin, mVolumeSegments.front().mDistMax, 0, &firstSegmentRayOverSampleRevPdf);
+									const float firstSegmentRayInSampleRevPdf = mVolumeSegments.front().mRaySampleRevPdf; // We were in medium -> we know we have insampled
+									mLightVertices.back().mMisData.mRaySampleRevPdfsRatio = firstSegmentRayOverSampleRevPdf / firstSegmentRayInSampleRevPdf;
+								}
+
+								if (lightVertex.mInMedium)
+									mLightVerticesInMediumCount++;
+								else
+									mLightVerticesOnSurfaceCount++;
+
+								UPBP_ASSERT(mLightVertices.size() < mLightVertices.capacity());
+								mLightVertices.push_back(lightVertex);
+							}
+
+							// Connect to camera, unless scattering function is purely specular or we are not allowed to connect from surface
+							if (mConnectToCamera && !bsdf.IsDelta() && (bsdf.IsInMedium() || mConnectToCameraFromSurf))
+							{
+								if (lightState.mPathLength + 1 >= mMinPathLength)
+									ConnectToCamera(camID, pathIdx, lightState, hitPoint, bsdf, mLightVertices.back().mMisData.mRaySamplePdfsRatio);
+							}
+
+							// Terminate if the path would become too long after scattering
+							if (lightState.mPathLength + 2 > mMaxPathLength)
+								break;
+
+							// Continue random walk
+							if (!SampleScattering(bsdf, hitPoint, isect, lightState, mLightVertices.back().mMisData, mLightVertices.at(mLightVertices.size() - 2).mMisData))
+								break;
+						}
+
+						mPathEnds[pathIdx] = (int)mLightVertices.size();
+					}
+
+				mTimer.Stop();
+				if (mVerbose)
+					std::cout << "    - light sub-path tracing done in " << mTimer.GetLastElapsedTime() << " sec. " << std::endl;
+
+				int photons = 0;
+
+				if (mMaxPathLength > 1)
 				{
-					// Prepare ray
-					Ray ray(lightState.mOrigin, lightState.mDirection);
-					Isect isect(1e36f);
-
-					// Trace ray
-					mVolumeSegments.clear();
-					mLiteVolumeSegments.clear();
-					bool intersected = mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, mVolumeSegments, mLiteVolumeSegments);
-
-					// Store beam if required
-					if (mMergeWithLightVerticesBB1D && pathIdx < mBB1DUsedLightSubPathCount)
+					if (!mLightVertices.empty())
 					{
-						AddBeams(ray, lightState.mThroughput, &mLightVertices.back(), originInMedium ? AbstractMedium::kOriginInMedium : 0, lightState.mLastPdfWInv);
-					}
-
-					if (!intersected)
-						break;
-
-					UPBP_ASSERT(isect.IsValid());
-
-					// Attenuate by intersected media (if any)
-					float raySamplePdf(1.0f);
-					float raySampleRevPdf(1.0f);
-					if (!mVolumeSegments.empty())
-					{
-						// PDF
-						raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
-						UPBP_ASSERT(raySamplePdf > 0);
-
-						// Reverse PDF
-						raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
-						UPBP_ASSERT(raySampleRevPdf > 0);
-
-						// Attenuation
-						lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
-					}
-
-					if (lightState.mThroughput.isBlackOrNegative())
-						break;
-
-					// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
-					BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
-
-					if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
-						break;
-
-					// Compute hitpoint
-					const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
-
-					originInMedium = isect.IsInMedium();
-
-					// Store vertex
-					{
-						UPBPLightVertex lightVertex;
-						lightVertex.mHitpoint = hitPoint;
-						lightVertex.mThroughput = lightState.mThroughput;
-						lightVertex.mPathIdx = pathIdx;
-						lightVertex.mPathLength = lightState.mPathLength;
-						lightVertex.mInMedium = originInMedium;
-						lightVertex.mConnectable = !bsdf.IsDelta();
-						lightVertex.mIsFinite = true;
-						lightVertex.mBSDF = bsdf;
-
-						// Determine whether the vertex is in medium behind real geometry
-						lightVertex.mBehindSurf = false;
-						if (lightVertex.mInMedium && !lightState.mBoundaryStack.IsEmpty())
+						//////////////////////////////////////////////////////////////////////////
+						// Build acceleration structure for SURF
+						//////////////////////////////////////////////////////////////////////////
+						if (mMergeWithLightVerticesSurf && mLightVerticesOnSurfaceCount)
 						{
-							int matId = lightState.mBoundaryStack.Top().mMaterialId;
-							if (matId >= 0)
-							{
-								const Material& mat = mScene.GetMaterial(matId);
-								if (mat.mGeometryType != GeometryType::IMAGINARY)
-									lightVertex.mBehindSurf = true;
-							}
+							// The number of cells is somewhat arbitrary, but seems to work ok
+							mSurfHashGrid.Reserve(pathCountL);
+							mSurfHashGrid.Build(mLightVertices, radiusSurf, SURF);
 						}
 
-						// Infinite lights use MIS handled via solid angle integration, so do not divide by the distance for such lights
-						const float distSq = (lightState.mPathLength > 1 || lightState.mIsFiniteLight == 1) ? Utils::sqr(isect.mDist) : 1.0f;
-						const float raySamplePdfInv = 1.0f / raySamplePdf;
-						lightVertex.mMisData.mPdfAInv = lightState.mLastPdfWInv * distSq * raySamplePdfInv / std::abs(bsdf.CosThetaFix());
-						lightVertex.mMisData.mRevPdfA = 1.0f;
-						lightVertex.mMisData.mRevPdfAWithoutBsdf = lightVertex.mMisData.mRevPdfA;
-						lightVertex.mMisData.mRaySamplePdfInv = raySamplePdfInv;
-						lightVertex.mMisData.mRaySampleRevPdfInv = 1.0f;
-						lightVertex.mMisData.mSinTheta = 0.0f;
-						lightVertex.mMisData.mCosThetaOut = 0.0f;
-						lightVertex.mMisData.mSurfMisWeightFactor = bsdf.IsOnSurface() ? mSurfMisWeightFactor : 0;
-						lightVertex.mMisData.mPP3DMisWeightFactor = bsdf.IsOnSurface() ? 0 : mPP3DMisWeightFactor;
-						lightVertex.mMisData.mPB2DMisWeightFactor = bsdf.IsOnSurface() ? 0 : mPB2DMisWeightFactor;
-						lightVertex.mMisData.mBB1DMisWeightFactor = bsdf.IsOnSurface() ? 0 : mBB1DMisWeightFactor;
-						lightVertex.mMisData.mBB1DBeamSelectionPdf = bsdf.IsOnSurface() ? 0 : 1;
-						lightVertex.mMisData.mIsDelta = bsdf.IsDelta();
-						lightVertex.mMisData.mIsOnLightSource = false;
-						lightVertex.mMisData.mIsSpecular = false;
-						lightVertex.mMisData.mInMediumWithBeams = bsdf.IsOnSurface() ? false : (!mMergeWithLightVerticesPB2D || bsdf.GetMedium()->GetMeanFreePath(hitPoint) > mBB1DMinMFP);
-
-						lightVertex.mMisData.mRaySamplePdfsRatio = 0.0f;
-						lightVertex.mMisData.mRaySampleRevPdfsRatio = 0.0f;
-						if (bsdf.IsInMedium())
+						//////////////////////////////////////////////////////////////////////////
+						// Build acceleration structure for PP3D
+						//////////////////////////////////////////////////////////////////////////
+						if (mMergeWithLightVerticesPP3D && mLightVerticesInMediumCount)
 						{
-							if (bsdf.GetMedium()->IsHomogeneous())
-							{
-								lightVertex.mMisData.mRaySamplePdfsRatio = 1.0f / ((const HomogeneousMedium*)bsdf.GetMedium())->mMinPositiveAttenuationCoefComp();
-								lightVertex.mMisData.mRaySampleRevPdfsRatio = lightVertex.mMisData.mRaySamplePdfsRatio;
-							}
-							else
-							{
-								const float lastSegmentRayOverSamplePdf = bsdf.GetMedium()->RaySamplePdf(ray, mVolumeSegments.back().mDistMin, mVolumeSegments.back().mDistMax, 0);
-								const float lastSegmentRayInSamplePdf = mVolumeSegments.back().mRaySamplePdf; // We are in medium -> we know we have insampled
-								lightVertex.mMisData.mRaySamplePdfsRatio = lastSegmentRayOverSamplePdf / lastSegmentRayInSamplePdf;
-							}
+							// The number of cells is somewhat arbitrary, but seems to work ok
+							mPP3DHashGrid.Reserve(pathCountL);
+							mPP3DHashGrid.Build(mLightVertices, radiusPP3D, PP3D);
 						}
 
-						// Update reverse PDFs of the previous vertex
-						mLightVertices.back().mMisData.mRevPdfA *= raySampleRevPdf / distSq;
-						mLightVertices.back().mMisData.mRevPdfAWithoutBsdf = mLightVertices.back().mMisData.mRevPdfA;
-						mLightVertices.back().mMisData.mRaySampleRevPdfInv = 1.0f / raySampleRevPdf;
-
-						if (mLightVertices.back().mBSDF.IsInMedium() && !mLightVertices.back().mBSDF.GetMedium()->IsHomogeneous()) // Homogeneous case was solved immediately when processing the vertex for the first time
+						//////////////////////////////////////////////////////////////////////////
+						// Build acceleration structure for PB2D
+						//////////////////////////////////////////////////////////////////////////
+						if (mMergeWithLightVerticesPB2D)
 						{
-							float firstSegmentRayOverSampleRevPdf;
-							mLightVertices.back().mBSDF.GetMedium()->RaySamplePdf(ray, mVolumeSegments.front().mDistMin, mVolumeSegments.front().mDistMax, 0, &firstSegmentRayOverSampleRevPdf);
-							const float firstSegmentRayInSampleRevPdf = mVolumeSegments.front().mRaySampleRevPdf; // We were in medium -> we know we have insampled
-							mLightVertices.back().mMisData.mRaySampleRevPdfsRatio = firstSegmentRayOverSampleRevPdf / firstSegmentRayInSampleRevPdf;
+							photons = mPB2DEmbreeBre.build(&mLightVertices[0], (int)mLightVertices.size(), mPB2DRadiusCalculation, radiusPB2D, mPB2DRadiusKNN, mVerbose);
 						}
-
-						if (lightVertex.mInMedium)
-							mLightVerticesInMediumCount++;
-						else
-							mLightVerticesOnSurfaceCount++;
-
-						UPBP_ASSERT(mLightVertices.size() < mLightVertices.capacity());
-						mLightVertices.push_back(lightVertex);
 					}
 
-					// Connect to camera, unless scattering function is purely specular or we are not allowed to connect from surface
-					if (mConnectToCamera && !bsdf.IsDelta() && (bsdf.IsInMedium() || mConnectToCameraFromSurf))
+					//////////////////////////////////////////////////////////////////////////
+					// Build acceleration structure for BB1D
+					//////////////////////////////////////////////////////////////////////////
+					if (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty())
 					{
-						if (lightState.mPathLength + 1 >= mMinPathLength)
-							ConnectToCamera(pathIdx, lightState, hitPoint, bsdf, mLightVertices.back().mMisData.mRaySamplePdfsRatio);
+						mBB1DPhotonBeams.build(mPhotonBeamsArray, mBB1DRadiusCalculation, radiusBB1D, mBB1DRadiusKNN, mVerbose);
+
+						// Set beam selection PDFs according to the built structure
+						if (mBB1DPhotonBeams.sMaxBeamsInCell)
+							for (std::vector<UPBPLightVertex>::iterator i = mLightVertices.begin(); i != mLightVertices.end(); ++i)
+							{
+								if (i->mBSDF.IsInMedium())
+									i->mMisData.mBB1DBeamSelectionPdf = mBB1DPhotonBeams.getBeamSelectionPdf(i->mHitpoint);
+							}
 					}
-
-					// Terminate if the path would become too long after scattering
-					if (lightState.mPathLength + 2 > mMaxPathLength)
-						break;
-
-					// Continue random walk
-					if (!SampleScattering(bsdf, hitPoint, isect, lightState, mLightVertices.back().mMisData, mLightVertices.at(mLightVertices.size() - 2).mMisData))
-						break;
 				}
-
-				mPathEnds[pathIdx] = (int)mLightVertices.size();
 			}
+
+			//////////////////////////////////////////////////////////////////////////
+			// Generate camera paths
+			//////////////////////////////////////////////////////////////////////////
+
+			if (mVerbose)
+				std::cout << " + tracing camera sub-paths..." << std::endl;
+			mTimer.Start();
+
+			// Unless rendering with traditional light tracing
+			if (mTraceCameraPaths)
+				for (int pathIdx = 0; pathIdx < pathCountC; ++pathIdx)
+				{
+					// Generate camera path origin and direction			
+					SubPathState cameraState;
+					const Vec2f screenSample = GenerateCameraSample(camID, pathIdx, cameraState);
+					Rgb color(0);
+
+					// We assume that the camera is on surface
+					bool originInMedium = false;
+
+					// Medium of the previous vertex
+					const AbstractMedium* lastMedium = NULL;
+
+					bool onlySpecSurf = (mEstimatorTechniques & (PREVIOUS | COMPATIBLE)) != 0;
+					bool stopBB1D = false;
+
+					//////////////////////////////////////////////////////////////////////
+					// Trace camera path
+					for (;; ++cameraState.mPathLength)
+					{
+						// Prepare ray
+						Ray ray(cameraState.mOrigin, cameraState.mDirection);
+						Isect isect(1e36f);
+
+						// Trace ray
+						mVolumeSegments.clear();
+						mLiteVolumeSegments.clear();
+						if (!mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, cameraState.mBoundaryStack, mVolumeSegments, mLiteVolumeSegments))
+						{
+							//UPBP_ASSERT(!mScene.GetGlobalMediumPtr()->HasScattering());			
+
+							// Vertex merging: point x beam 2D
+							if (mMergeWithLightVerticesPB2D && !mLightVertices.empty())
+							{
+								mDebugImages.ResetAccum();
+								uint estimatorTechniques = mEstimatorTechniques;
+								//if (!cameraState.mSpecularPath) estimatorTechniques |= BEAM_REDUCTION;
+								embree::AdditionalRayDataForMis data(&mLightVertices, &mPathEnds, &mCameraVerticesMisData, cameraState.mPathLength, mMinPathLength, mMaxPathLength, mQueryBeamType, mPhotonBeamType, cameraState.mLastPdfWInv, mSurfMisWeightFactor, mPP3DMisWeightFactor, mPB2DMisWeightFactor, mBB1DMisWeightFactor, (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty()) ? &mBB1DPhotonBeams : NULL, mBB1DMinMFP, mLightSubPathCount, mMinDistToMed, 0.0f, 0.0f, 0, &mDebugImages);
+								const Rgb contrib = mPB2DEmbreeBre.evalBre(mQueryBeamType, ray, mVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
+								const Rgb mult = cameraState.mThroughput * mPB2DNormalization;
+								color += mult * contrib;
+								mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::PB2D, screenSample, mult);
+							}
+
+							// Vertex merging: beam x beam 1D
+							if (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty() && !stopBB1D)
+							{
+								mDebugImages.ResetAccum();
+								uint estimatorTechniques = mEstimatorTechniques;
+								//if (!cameraState.mSpecularPath) estimatorTechniques |= BEAM_REDUCTION;
+								embree::AdditionalRayDataForMis data(&mLightVertices, &mPathEnds, &mCameraVerticesMisData, cameraState.mPathLength, mMinPathLength, mMaxPathLength, mQueryBeamType, mPhotonBeamType, cameraState.mLastPdfWInv, mSurfMisWeightFactor, mPP3DMisWeightFactor, mPB2DMisWeightFactor, mBB1DMisWeightFactor, !mPhotonBeamsArray.empty() ? &mBB1DPhotonBeams : NULL, mBB1DMinMFP, mBB1DUsedLightSubPathCount, mMinDistToMed, 0.0f, 0.0f, 0, &mDebugImages);
+								const Rgb contrib = mBB1DPhotonBeams.evalBeamBeamEstimate(mQueryBeamType, ray, mVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
+								const Rgb mult = cameraState.mThroughput * mBB1DNormalization;
+								color += mult * contrib;
+								mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::BB1D, screenSample, mult);
+							}
+
+							// We cannot end yet
+							if (cameraState.mPathLength < mMinPathLength)
+								break;
+
+							// Get background light					
+							const BackgroundLight* background = mScene.GetBackground();
+							if (!background)
+								break;
+
+							// In attenuating media the ray can never travel to infinity
+							if (mScene.GetGlobalMediumPtr()->HasAttenuation())
+								break;
+
+							// Stop if we are in the light sampling mode and could have sampled this light last time in the next event estimation
+							if (mAlgorithm == kPTls && cameraState.mPathLength > 1 && !cameraState.mLastSpecular)
+								break;
+
+							// Attenuate by intersected media (if any)
+							float raySamplePdf(1.0f);
+							float raySampleRevPdf(1.0f);
+							if (!mVolumeSegments.empty())
+							{
+								// PDF
+								raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
+								UPBP_ASSERT(raySamplePdf > 0);
+
+								// Reverse PDF
+								raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
+								UPBP_ASSERT(raySampleRevPdf > 0);
+
+								// Attenuation
+								cameraState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
+							}
+
+							if (cameraState.mThroughput.isBlackOrNegative())
+								break;
+
+							// Update affected MIS data
+							const float raySamplePdfInv = 1.0f / raySamplePdf;
+							mCameraVerticesMisData[cameraState.mPathLength].mPdfAInv = cameraState.mLastPdfWInv * raySamplePdfInv;
+							mCameraVerticesMisData[cameraState.mPathLength].mRevPdfA = 1.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfInv = raySamplePdfInv;
+							mCameraVerticesMisData[cameraState.mPathLength].mRaySampleRevPdfInv = 1.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mSinTheta = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mCosThetaOut = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mSurfMisWeightFactor = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mPP3DMisWeightFactor = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mPB2DMisWeightFactor = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mBB1DMisWeightFactor = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mBB1DBeamSelectionPdf = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mIsDelta = false;
+							mCameraVerticesMisData[cameraState.mPathLength].mIsOnLightSource = true;
+							mCameraVerticesMisData[cameraState.mPathLength].mIsSpecular = false;
+							mCameraVerticesMisData[cameraState.mPathLength].mInMediumWithBeams = false;
+							mCameraVerticesMisData[cameraState.mPathLength - 1].mRevPdfA *= raySampleRevPdf;
+							mCameraVerticesMisData[cameraState.mPathLength - 1].mRaySampleRevPdfInv = 1.0f / raySampleRevPdf;
+
+							if (lastMedium && !lastMedium->IsHomogeneous()) // Homogeneous case was solved immediately when processing the vertex for the first time
+							{
+								float firstSegmentRayOverSampleRevPdf;
+								lastMedium->RaySamplePdf(ray, mVolumeSegments.front().mDistMin, mVolumeSegments.front().mDistMax, 0, &firstSegmentRayOverSampleRevPdf);
+								const float firstSegmentRayInSampleRevPdf = mVolumeSegments.front().mRaySampleRevPdf; // We were in medium -> we know we have insampled
+								mCameraVerticesMisData[cameraState.mPathLength - 1].mRaySampleRevPdfsRatio = firstSegmentRayOverSampleRevPdf / firstSegmentRayInSampleRevPdf;
+							}
+
+							mDebugImages.ResetTemp();
+							// Accumulate contribution
+							color += cameraState.mThroughput *
+								GetLightRadiance(mScene.GetBackground(), cameraState, Pos(0));
+							const Rgb debugRgb = cameraState.mThroughput * mDebugImages.getTempRGB();
+							mDebugImages.addSample(cameraState.mPathLength, 0, DebugImages::BPT, screenSample, debugRgb, debugRgb * mDebugImages.getTempMisWeight(), mDebugImages.getTempMisWeight());
+							break;
+						}
+
+						UPBP_ASSERT(isect.IsValid());
+
+						////////////////////////////////////////////////////////////////
+						// Vertex merging: point x beam 2D
+						if (mMergeWithLightVerticesPB2D && !mLightVertices.empty())
+						{
+							mDebugImages.ResetAccum();
+							Rgb contrib(0);
+							uint estimatorTechniques = mEstimatorTechniques;
+							//if (!cameraState.mSpecularPath) estimatorTechniques |= BEAM_REDUCTION;
+							embree::AdditionalRayDataForMis data(&mLightVertices, &mPathEnds, &mCameraVerticesMisData, cameraState.mPathLength, mMinPathLength, mMaxPathLength, mQueryBeamType, mPhotonBeamType, cameraState.mLastPdfWInv, mSurfMisWeightFactor, mPP3DMisWeightFactor, mPB2DMisWeightFactor, mBB1DMisWeightFactor, (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty()) ? &mBB1DPhotonBeams : NULL, mBB1DMinMFP, mLightSubPathCount, mMinDistToMed, 0.0f, 0.0f, 0, &mDebugImages);
+							if (isect.IsOnSurface() || mQueryBeamType == SHORT_BEAM)
+								contrib = mPB2DEmbreeBre.evalBre(mQueryBeamType, ray, mVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
+							else
+								contrib = mPB2DEmbreeBre.evalBre(mQueryBeamType, ray, mLiteVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
+							const Rgb mult = cameraState.mThroughput * mPB2DNormalization;
+							color += mult * contrib;
+							mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::PB2D, screenSample, mult);
+						}
+
+						////////////////////////////////////////////////////////////////
+						// Vertex merging: beam x beam 1D
+						if (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty() && !stopBB1D)
+						{
+							mDebugImages.ResetAccum();
+							Rgb contrib(0);
+							uint estimatorTechniques = mEstimatorTechniques;
+							//if (!cameraState.mSpecularPath) estimatorTechniques |= BEAM_REDUCTION;
+							embree::AdditionalRayDataForMis data(&mLightVertices, &mPathEnds, &mCameraVerticesMisData, cameraState.mPathLength, mMinPathLength, mMaxPathLength, mQueryBeamType, mPhotonBeamType, cameraState.mLastPdfWInv, mSurfMisWeightFactor, mPP3DMisWeightFactor, mPB2DMisWeightFactor, mBB1DMisWeightFactor, !mPhotonBeamsArray.empty() ? &mBB1DPhotonBeams : NULL, mBB1DMinMFP, mBB1DUsedLightSubPathCount, mMinDistToMed, 0.0f, 0.0f, 0, &mDebugImages);
+							if (isect.IsOnSurface() || mQueryBeamType == SHORT_BEAM)
+								contrib = mBB1DPhotonBeams.evalBeamBeamEstimate(mQueryBeamType, ray, mVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
+							else
+								contrib = mBB1DPhotonBeams.evalBeamBeamEstimate(mQueryBeamType, ray, mLiteVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
+							const Rgb mult = cameraState.mThroughput * mBB1DNormalization;
+							color += mult * contrib;
+							mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::BB1D, screenSample, mult);
+						}
+
+						// Attenuate by intersected media (if any)
+						float raySamplePdf(1.0f);
+						float raySampleRevPdf(1.0f);
+						if (!mVolumeSegments.empty())
+						{
+							// PDF
+							raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
+							UPBP_ASSERT(raySamplePdf > 0);
+
+							// Reverse PDF
+							raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
+							UPBP_ASSERT(raySampleRevPdf > 0);
+
+							// Attenuation
+							cameraState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
+						}
+
+						if (cameraState.mThroughput.isBlackOrNegative())
+							break;
+
+						// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
+						BSDF bsdf(ray, isect, mScene, BSDF::kFromCamera, mScene.RelativeIOR(isect, cameraState.mBoundaryStack));
+
+						if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
+							break;
+
+						// Compute hitpoint
+						Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+
+						originInMedium = isect.IsInMedium();
+
+						// Update affected MIS data
+						{
+							const float distSq = Utils::sqr(isect.mDist);
+							const float raySamplePdfInv = 1.0f / raySamplePdf;
+							mCameraVerticesMisData[cameraState.mPathLength].mPdfAInv = cameraState.mLastPdfWInv * distSq * raySamplePdfInv / std::abs(bsdf.CosThetaFix());
+							mCameraVerticesMisData[cameraState.mPathLength].mRevPdfA = 1.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfInv = raySamplePdfInv;
+							mCameraVerticesMisData[cameraState.mPathLength].mRaySampleRevPdfInv = 1.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mSinTheta = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mCosThetaOut = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mSurfMisWeightFactor = bsdf.IsOnSurface() ? (isect.mLightID >= 0 ? 0.0f : mSurfMisWeightFactor) : 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mPP3DMisWeightFactor = bsdf.IsOnSurface() ? 0.0f : mPP3DMisWeightFactor;
+							mCameraVerticesMisData[cameraState.mPathLength].mPB2DMisWeightFactor = bsdf.IsOnSurface() ? 0.0f : mPB2DMisWeightFactor;
+							mCameraVerticesMisData[cameraState.mPathLength].mBB1DMisWeightFactor = bsdf.IsOnSurface() ? 0.0f : mBB1DMisWeightFactor;
+							mCameraVerticesMisData[cameraState.mPathLength].mBB1DBeamSelectionPdf = bsdf.IsOnSurface() ? 0.0f : ((mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty() && mBB1DPhotonBeams.sMaxBeamsInCell) ? mBB1DPhotonBeams.getBeamSelectionPdf(hitPoint) : 1.0f);
+							mCameraVerticesMisData[cameraState.mPathLength].mIsDelta = isect.mLightID >= 0 ? false : bsdf.IsDelta();
+							mCameraVerticesMisData[cameraState.mPathLength].mIsOnLightSource = isect.mLightID >= 0;
+							mCameraVerticesMisData[cameraState.mPathLength].mIsSpecular = false;
+							mCameraVerticesMisData[cameraState.mPathLength].mInMediumWithBeams = bsdf.IsOnSurface() ? false : (!mMergeWithLightVerticesPB2D || bsdf.GetMedium()->GetMeanFreePath(hitPoint) > mBB1DMinMFP);
+
+							mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio = 0.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mRaySampleRevPdfsRatio = 0.0f;
+							if (bsdf.IsInMedium())
+							{
+								if (bsdf.GetMedium()->IsHomogeneous())
+								{
+									mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio = 1.0f / ((const HomogeneousMedium*)bsdf.GetMedium())->mMinPositiveAttenuationCoefComp();
+									mCameraVerticesMisData[cameraState.mPathLength].mRaySampleRevPdfsRatio = mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio;
+								}
+								else
+								{
+									const float lastSegmentRayOverSamplePdf = bsdf.GetMedium()->RaySamplePdf(ray, mVolumeSegments.back().mDistMin, mVolumeSegments.back().mDistMax, 0);
+									const float lastSegmentRayInSamplePdf = mVolumeSegments.back().mRaySamplePdf; // We are in medium -> we know we have insampled
+									mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio = lastSegmentRayOverSamplePdf / lastSegmentRayInSamplePdf;
+								}
+							}
+
+							// Update reverse PDFs of the previous vertex
+							mCameraVerticesMisData[cameraState.mPathLength - 1].mRevPdfA *= raySampleRevPdf / distSq;
+							mCameraVerticesMisData[cameraState.mPathLength - 1].mRaySampleRevPdfInv = 1.0f / raySampleRevPdf;
+
+							if (lastMedium && !lastMedium->IsHomogeneous()) // Homogeneous case was solved immediately when processing the vertex for the first time
+							{
+								float firstSegmentRayOverSampleRevPdf;
+								lastMedium->RaySamplePdf(ray, mVolumeSegments.front().mDistMin, mVolumeSegments.front().mDistMax, 0, &firstSegmentRayOverSampleRevPdf);
+								const float firstSegmentRayInSampleRevPdf = mVolumeSegments.front().mRaySampleRevPdf; // We were in medium -> we know we have insampled
+								mCameraVerticesMisData[cameraState.mPathLength - 1].mRaySampleRevPdfsRatio = firstSegmentRayOverSampleRevPdf / firstSegmentRayInSampleRevPdf;
+							}
+						}
+
+						// Light source has been hit; terminate afterwards, since
+						// our light sources do not have reflective properties
+						if (isect.mLightID >= 0)
+						{
+							// We cannot end yet
+							if (cameraState.mPathLength < mMinPathLength)
+								break;
+
+							// Stop if we are in the light sampling mode and could have sampled this light last time in the next event estimation
+							if (mAlgorithm == kPTls && cameraState.mPathLength > 1 && !cameraState.mLastSpecular)
+								break;
+
+							// Get hit light
+							const AbstractLight *light = mScene.GetLightPtr(isect.mLightID);
+							UPBP_ASSERT(light);
+
+							// Add its contribution
+							mDebugImages.ResetTemp();
+							const Rgb contrib = cameraState.mThroughput *
+								GetLightRadiance(light, cameraState, hitPoint);
+							color += contrib;
+							const Rgb debugRgb = cameraState.mThroughput * mDebugImages.getTempRGB();
+							mDebugImages.addSample(cameraState.mPathLength, 0, DebugImages::BPT, screenSample, debugRgb, debugRgb * mDebugImages.getTempMisWeight(), mDebugImages.getTempMisWeight());
+							break;
+						}
+
+						// Terminate if eye sub-path is too long for connections or merging
+						if (cameraState.mPathLength >= mMaxPathLength)
+							break;
+
+						// Ignore contribution of primary rays from medium too close to camera
+						if (cameraState.mPathLength > 1 || bsdf.IsOnSurface() || isect.mDist >= mMinDistToMed)
+						{
+							////////////////////////////////////////////////////////////////
+							// Vertex connection: Connect to a light source
+							if (mConnectToLightSource && !bsdf.IsDelta() && cameraState.mPathLength + 1 >= mMinPathLength && mScene.GetLightCount() > 0 && (bsdf.IsInMedium() || !onlySpecSurf))
+							{
+								mDebugImages.ResetTemp();
+								color += cameraState.mThroughput *
+									DirectIllumination(cameraState, hitPoint, bsdf);
+								const Rgb debugRgb = cameraState.mThroughput * mDebugImages.getTempRGB();
+								mDebugImages.addSample(cameraState.mPathLength + 1, 0, DebugImages::BPT, screenSample, debugRgb, debugRgb * mDebugImages.getTempMisWeight(), mDebugImages.getTempMisWeight());
+							}
+
+							////////////////////////////////////////////////////////////////
+							// Vertex connection: Connect to light vertices
+							if (mConnectToLightVertices && !bsdf.IsDelta() && !mLightVertices.empty() && (bsdf.IsInMedium() || !onlySpecSurf))
+							{
+								// Determine whether the vertex is in medium behind real geometry
+								bool behindSurf = false;
+								if (bsdf.IsInMedium() && !cameraState.mBoundaryStack.IsEmpty())
+								{
+									int matId = cameraState.mBoundaryStack.Top().mMaterialId;
+									if (matId >= 0)
+									{
+										const Material& mat = mScene.GetMaterial(matId);
+										if (mat.mGeometryType != GeometryType::IMAGINARY)
+											behindSurf = true;
+									}
+								}
+
+								int pathIdxMod = mRng.GetUint() % pathCountL;
+
+								// For VC, each light sub-path is assigned to a particular eye
+								// sub-path, as in traditional BPT. It is also possible to
+								// connect to vertices from any light path, but MIS should
+								// be revisited.
+								const Vec2i range(
+									(pathIdxMod == 0) ? 0 : mPathEnds[pathIdxMod - 1],
+									mPathEnds[pathIdxMod]);
+
+								for (int i = range[0]; i < range[1]; i++)
+								{
+									const UPBPLightVertex &lightVertex = mLightVertices[i];
+
+									if (lightVertex.mPathLength + 1 +
+										cameraState.mPathLength < mMinPathLength)
+										continue;
+
+									// Light vertices are stored in increasing path length
+									// order; once we go above the max path length, we can
+									// skip the rest
+									if (lightVertex.mPathLength + 1 +
+										cameraState.mPathLength > mMaxPathLength)
+										break;
+
+									// We store all light vertices in order to compute MIS weights but not all can be used for VC
+									if (!lightVertex.mConnectable)
+										continue;
+
+									// Don't try connect vertices in different media with real geometry
+									if (lightVertex.mBSDF.IsInMedium() && bsdf.IsInMedium() && lightVertex.mBSDF.GetMedium() != bsdf.GetMedium()
+										&& (lightVertex.mBehindSurf || behindSurf))
+										continue;
+
+									const Rgb mult = cameraState.mThroughput * lightVertex.mThroughput;
+									mDebugImages.ResetTemp();
+									color += mult * ConnectVertices(lightVertex, bsdf, hitPoint, cameraState);
+									const Rgb debugRgb = mult * mDebugImages.getTempRGB();
+									mDebugImages.addSample(cameraState.mPathLength + 1, lightVertex.mPathLength, DebugImages::BPT, screenSample, debugRgb, debugRgb * mDebugImages.getTempMisWeight(), mDebugImages.getTempMisWeight());
+								}
+							}
+
+							////////////////////////////////////////////////////////////////
+							// Vertex merging: surface photon mapping
+							if (mMergeWithLightVerticesSurf && bsdf.IsOnSurface() && !bsdf.IsDelta() && mLightVerticesOnSurfaceCount > 0 && !onlySpecSurf)
+							{
+								mDebugImages.ResetAccum();
+								RangeQuery query(*this, hitPoint, bsdf, cameraState, mDebugImages);
+								mSurfHashGrid.Process(mLightVertices, query);
+								const Rgb mult = cameraState.mThroughput * mSurfNormalization;
+								color += mult * query.GetContrib();
+								mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::SURFACE_PHOTON_MAPPING, screenSample, mult);
+
+								// PPM merges only at the first non-specular surface from camera
+								if (mAlgorithm == kPPM) break;
+							}
+
+							////////////////////////////////////////////////////////////////
+							// Vertex merging: point x point 3D
+							if (mMergeWithLightVerticesPP3D && bsdf.IsInMedium() && !bsdf.IsDelta() && mLightVerticesInMediumCount > 0)
+							{
+								mDebugImages.ResetAccum();
+								RangeQuery query(*this, hitPoint, bsdf, cameraState, mDebugImages);
+								mPP3DHashGrid.Process(mLightVertices, query);
+								const Rgb mult = cameraState.mThroughput * mPP3DNormalization;
+								color += mult * query.GetContrib();
+								mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::PP3D, screenSample, mult);
+							}
+						}
+
+						// Continue random walk
+						if (!SampleScattering(bsdf, hitPoint, isect, cameraState, mCameraVerticesMisData[cameraState.mPathLength], mCameraVerticesMisData[cameraState.mPathLength - 1]))
+							break;
+
+						if (bsdf.IsOnSurface())
+						{
+							if (!cameraState.mLastSpecular)
+							{
+								if (onlySpecSurf || (mEstimatorTechniques & SPECULAR_ONLY))
+									break;
+
+								if (mEstimatorTechniques & BB1D_PREVIOUS)
+									stopBB1D = true;
+							}
+
+							lastMedium = NULL;
+						}
+						else
+						{
+							if (mEstimatorTechniques & SPECULAR_ONLY)
+								break;
+
+							if (onlySpecSurf)
+							{
+								if (mEstimatorTechniques & COMPATIBLE)
+									onlySpecSurf = false;
+								else
+									break;
+							}
+
+							if (mEstimatorTechniques & BB1D_PREVIOUS)
+								stopBB1D = true;
+
+							lastMedium = bsdf.GetMedium();
+						}
+					}
+
+					fbuffer.AddColor(screenSample, color);
+				}
 
 			mTimer.Stop();
 			if (mVerbose)
-				std::cout << "    - light sub-path tracing done in " << mTimer.GetLastElapsedTime() << " sec. " << std::endl;
+				std::cout << std::setprecision(3) << "   - camera sub-path tracing done in " << mTimer.GetLastElapsedTime() << " sec. " << std::endl;
 
-			int photons = 0;
+			mCameraTracingTime += mTimer.GetLastElapsedTime();
 
-			if (mMaxPathLength > 1)
+			// Delete stored photons
+			if (mMergeWithLightVerticesPB2D && mMaxPathLength > 1 && !mLightVertices.empty())
 			{
-				if (!mLightVertices.empty())
-				{
-					//////////////////////////////////////////////////////////////////////////
-					// Build acceleration structure for SURF
-					//////////////////////////////////////////////////////////////////////////
-					if (mMergeWithLightVerticesSurf && mLightVerticesOnSurfaceCount)
-					{
-						// The number of cells is somewhat arbitrary, but seems to work ok
-						mSurfHashGrid.Reserve(pathCountL);
-						mSurfHashGrid.Build(mLightVertices, radiusSurf, SURF);
-					}
-
-					//////////////////////////////////////////////////////////////////////////
-					// Build acceleration structure for PP3D
-					//////////////////////////////////////////////////////////////////////////
-					if (mMergeWithLightVerticesPP3D && mLightVerticesInMediumCount)
-					{
-						// The number of cells is somewhat arbitrary, but seems to work ok
-						mPP3DHashGrid.Reserve(pathCountL);
-						mPP3DHashGrid.Build(mLightVertices, radiusPP3D, PP3D);
-					}
-
-					//////////////////////////////////////////////////////////////////////////
-					// Build acceleration structure for PB2D
-					//////////////////////////////////////////////////////////////////////////
-					if (mMergeWithLightVerticesPB2D)
-					{
-						photons = mPB2DEmbreeBre.build(&mLightVertices[0], (int)mLightVertices.size(), mPB2DRadiusCalculation, radiusPB2D, mPB2DRadiusKNN, mVerbose);
-					}
-				}
-
-				//////////////////////////////////////////////////////////////////////////
-				// Build acceleration structure for BB1D
-				//////////////////////////////////////////////////////////////////////////
-				if (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty())
-				{
-					mBB1DPhotonBeams.build(mPhotonBeamsArray, mBB1DRadiusCalculation, radiusBB1D, mBB1DRadiusKNN, mVerbose);
-
-					// Set beam selection PDFs according to the built structure
-					if (mBB1DPhotonBeams.sMaxBeamsInCell)
-					for (std::vector<UPBPLightVertex>::iterator i = mLightVertices.begin(); i != mLightVertices.end(); ++i)
-					{
-						if (i->mBSDF.IsInMedium())
-							i->mMisData.mBB1DBeamSelectionPdf = mBB1DPhotonBeams.getBeamSelectionPdf(i->mHitpoint);
-					}
-				}
-			}
-		}
-
-		//////////////////////////////////////////////////////////////////////////
-		// Generate camera paths
-		//////////////////////////////////////////////////////////////////////////
-
-		if (mVerbose)
-			std::cout << " + tracing camera sub-paths..." << std::endl;
-		mTimer.Start();
-
-		// Unless rendering with traditional light tracing
-		if (mTraceCameraPaths)
-		for (int pathIdx = 0; pathIdx < pathCountC; ++pathIdx)
-		{
-			// Generate camera path origin and direction			
-			SubPathState cameraState;
-			const Vec2f screenSample = GenerateCameraSample(pathIdx, cameraState);
-			Rgb color(0);
-
-			// We assume that the camera is on surface
-			bool originInMedium = false;
-
-			// Medium of the previous vertex
-			const AbstractMedium* lastMedium = NULL;
-
-			bool onlySpecSurf = (mEstimatorTechniques & (PREVIOUS | COMPATIBLE)) != 0;
-			bool stopBB1D = false;
-
-			//////////////////////////////////////////////////////////////////////
-			// Trace camera path
-			for (;; ++cameraState.mPathLength)
-			{
-				// Prepare ray
-				Ray ray(cameraState.mOrigin, cameraState.mDirection);
-				Isect isect(1e36f);
-
-				// Trace ray
-				mVolumeSegments.clear();
-				mLiteVolumeSegments.clear();
-				if (!mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, cameraState.mBoundaryStack, mVolumeSegments, mLiteVolumeSegments))
-				{
-					//UPBP_ASSERT(!mScene.GetGlobalMediumPtr()->HasScattering());			
-
-					// Vertex merging: point x beam 2D
-					if (mMergeWithLightVerticesPB2D && !mLightVertices.empty())
-					{
-						mDebugImages.ResetAccum();
-						uint estimatorTechniques = mEstimatorTechniques;
-						//if (!cameraState.mSpecularPath) estimatorTechniques |= BEAM_REDUCTION;
-						embree::AdditionalRayDataForMis data(&mLightVertices, &mPathEnds, &mCameraVerticesMisData, cameraState.mPathLength, mMinPathLength, mMaxPathLength, mQueryBeamType, mPhotonBeamType, cameraState.mLastPdfWInv, mSurfMisWeightFactor, mPP3DMisWeightFactor, mPB2DMisWeightFactor, mBB1DMisWeightFactor, (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty()) ? &mBB1DPhotonBeams : NULL, mBB1DMinMFP, mLightSubPathCount, mMinDistToMed, 0.0f, 0.0f, 0, &mDebugImages);
-						const Rgb contrib = mPB2DEmbreeBre.evalBre(mQueryBeamType, ray, mVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
-						const Rgb mult = cameraState.mThroughput * mPB2DNormalization;
-						color += mult * contrib;
-						mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::PB2D, screenSample, mult);
-					}
-
-					// Vertex merging: beam x beam 1D
-					if (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty() && !stopBB1D)
-					{
-						mDebugImages.ResetAccum();
-						uint estimatorTechniques = mEstimatorTechniques;
-						//if (!cameraState.mSpecularPath) estimatorTechniques |= BEAM_REDUCTION;
-						embree::AdditionalRayDataForMis data(&mLightVertices, &mPathEnds, &mCameraVerticesMisData, cameraState.mPathLength, mMinPathLength, mMaxPathLength, mQueryBeamType, mPhotonBeamType, cameraState.mLastPdfWInv, mSurfMisWeightFactor, mPP3DMisWeightFactor, mPB2DMisWeightFactor, mBB1DMisWeightFactor, !mPhotonBeamsArray.empty() ? &mBB1DPhotonBeams : NULL, mBB1DMinMFP, mBB1DUsedLightSubPathCount, mMinDistToMed, 0.0f, 0.0f, 0, &mDebugImages);
-						const Rgb contrib = mBB1DPhotonBeams.evalBeamBeamEstimate(mQueryBeamType, ray, mVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
-						const Rgb mult = cameraState.mThroughput * mBB1DNormalization;
-						color += mult * contrib;
-						mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::BB1D, screenSample, mult);
-					}
-
-					// We cannot end yet
-					if (cameraState.mPathLength < mMinPathLength)
-						break;
-
-					// Get background light					
-					const BackgroundLight* background = mScene.GetBackground();
-					if (!background)
-						break;
-
-					// In attenuating media the ray can never travel to infinity
-					if (mScene.GetGlobalMediumPtr()->HasAttenuation())
-						break;
-
-					// Stop if we are in the light sampling mode and could have sampled this light last time in the next event estimation
-					if (mAlgorithm == kPTls && cameraState.mPathLength > 1 && !cameraState.mLastSpecular)
-						break;
-
-					// Attenuate by intersected media (if any)
-					float raySamplePdf(1.0f);
-					float raySampleRevPdf(1.0f);
-					if (!mVolumeSegments.empty())
-					{
-						// PDF
-						raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
-						UPBP_ASSERT(raySamplePdf > 0);
-
-						// Reverse PDF
-						raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
-						UPBP_ASSERT(raySampleRevPdf > 0);
-
-						// Attenuation
-						cameraState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
-					}
-
-					if (cameraState.mThroughput.isBlackOrNegative())
-						break;
-
-					// Update affected MIS data
-					const float raySamplePdfInv = 1.0f / raySamplePdf;
-					mCameraVerticesMisData[cameraState.mPathLength].mPdfAInv = cameraState.mLastPdfWInv * raySamplePdfInv;
-					mCameraVerticesMisData[cameraState.mPathLength].mRevPdfA = 1.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfInv = raySamplePdfInv;
-					mCameraVerticesMisData[cameraState.mPathLength].mRaySampleRevPdfInv = 1.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mSinTheta = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mCosThetaOut = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mSurfMisWeightFactor = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mPP3DMisWeightFactor = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mPB2DMisWeightFactor = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mBB1DMisWeightFactor = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mBB1DBeamSelectionPdf = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mIsDelta = false;
-					mCameraVerticesMisData[cameraState.mPathLength].mIsOnLightSource = true;
-					mCameraVerticesMisData[cameraState.mPathLength].mIsSpecular = false;
-					mCameraVerticesMisData[cameraState.mPathLength].mInMediumWithBeams = false;
-					mCameraVerticesMisData[cameraState.mPathLength - 1].mRevPdfA *= raySampleRevPdf;
-					mCameraVerticesMisData[cameraState.mPathLength - 1].mRaySampleRevPdfInv = 1.0f / raySampleRevPdf;
-
-					if (lastMedium && !lastMedium->IsHomogeneous()) // Homogeneous case was solved immediately when processing the vertex for the first time
-					{
-						float firstSegmentRayOverSampleRevPdf;
-						lastMedium->RaySamplePdf(ray, mVolumeSegments.front().mDistMin, mVolumeSegments.front().mDistMax, 0, &firstSegmentRayOverSampleRevPdf);
-						const float firstSegmentRayInSampleRevPdf = mVolumeSegments.front().mRaySampleRevPdf; // We were in medium -> we know we have insampled
-						mCameraVerticesMisData[cameraState.mPathLength - 1].mRaySampleRevPdfsRatio = firstSegmentRayOverSampleRevPdf / firstSegmentRayInSampleRevPdf;
-					}
-
-					mDebugImages.ResetTemp();
-					// Accumulate contribution
-					color += cameraState.mThroughput *
-						GetLightRadiance(mScene.GetBackground(), cameraState, Pos(0));
-					const Rgb debugRgb = cameraState.mThroughput * mDebugImages.getTempRGB();
-					mDebugImages.addSample(cameraState.mPathLength, 0, DebugImages::BPT, screenSample, debugRgb, debugRgb * mDebugImages.getTempMisWeight(), mDebugImages.getTempMisWeight());
-					break;
-				}
-
-				UPBP_ASSERT(isect.IsValid());
-
-				////////////////////////////////////////////////////////////////
-				// Vertex merging: point x beam 2D
-				if (mMergeWithLightVerticesPB2D && !mLightVertices.empty())
-				{
-					mDebugImages.ResetAccum();
-					Rgb contrib(0);
-					uint estimatorTechniques = mEstimatorTechniques;
-					//if (!cameraState.mSpecularPath) estimatorTechniques |= BEAM_REDUCTION;
-					embree::AdditionalRayDataForMis data(&mLightVertices, &mPathEnds, &mCameraVerticesMisData, cameraState.mPathLength, mMinPathLength, mMaxPathLength, mQueryBeamType, mPhotonBeamType, cameraState.mLastPdfWInv, mSurfMisWeightFactor, mPP3DMisWeightFactor, mPB2DMisWeightFactor, mBB1DMisWeightFactor, (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty()) ? &mBB1DPhotonBeams : NULL, mBB1DMinMFP, mLightSubPathCount, mMinDistToMed, 0.0f, 0.0f, 0, &mDebugImages);
-					if (isect.IsOnSurface() || mQueryBeamType == SHORT_BEAM)
-						contrib = mPB2DEmbreeBre.evalBre(mQueryBeamType, ray, mVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
-					else
-						contrib = mPB2DEmbreeBre.evalBre(mQueryBeamType, ray, mLiteVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
-					const Rgb mult = cameraState.mThroughput * mPB2DNormalization;
-					color += mult * contrib;
-					mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::PB2D, screenSample, mult);
-				}
-
-				////////////////////////////////////////////////////////////////
-				// Vertex merging: beam x beam 1D
-				if (mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty() && !stopBB1D)
-				{
-					mDebugImages.ResetAccum();
-					Rgb contrib(0);
-					uint estimatorTechniques = mEstimatorTechniques;
-					//if (!cameraState.mSpecularPath) estimatorTechniques |= BEAM_REDUCTION;
-					embree::AdditionalRayDataForMis data(&mLightVertices, &mPathEnds, &mCameraVerticesMisData, cameraState.mPathLength, mMinPathLength, mMaxPathLength, mQueryBeamType, mPhotonBeamType, cameraState.mLastPdfWInv, mSurfMisWeightFactor, mPP3DMisWeightFactor, mPB2DMisWeightFactor, mBB1DMisWeightFactor, !mPhotonBeamsArray.empty() ? &mBB1DPhotonBeams : NULL, mBB1DMinMFP, mBB1DUsedLightSubPathCount, mMinDistToMed, 0.0f, 0.0f, 0, &mDebugImages);
-					if (isect.IsOnSurface() || mQueryBeamType == SHORT_BEAM)
-						contrib = mBB1DPhotonBeams.evalBeamBeamEstimate(mQueryBeamType, ray, mVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
-					else
-						contrib = mBB1DPhotonBeams.evalBeamBeamEstimate(mQueryBeamType, ray, mLiteVolumeSegments, estimatorTechniques, originInMedium ? AbstractMedium::kOriginInMedium : 0, &data);
-					const Rgb mult = cameraState.mThroughput * mBB1DNormalization;
-					color += mult * contrib;
-					mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::BB1D, screenSample, mult);
-				}
-
-				// Attenuate by intersected media (if any)
-				float raySamplePdf(1.0f);
-				float raySampleRevPdf(1.0f);
-				if (!mVolumeSegments.empty())
-				{
-					// PDF
-					raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
-					UPBP_ASSERT(raySamplePdf > 0);
-
-					// Reverse PDF
-					raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
-					UPBP_ASSERT(raySampleRevPdf > 0);
-
-					// Attenuation
-					cameraState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
-				}
-
-				if (cameraState.mThroughput.isBlackOrNegative())
-					break;
-
-				// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
-				BSDF bsdf(ray, isect, mScene, BSDF::kFromCamera, mScene.RelativeIOR(isect, cameraState.mBoundaryStack));
-
-				if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
-					break;
-
-				// Compute hitpoint
-				Pos hitPoint = ray.origin + ray.direction * isect.mDist;
-
-				originInMedium = isect.IsInMedium();
-
-				// Update affected MIS data
-				{
-					const float distSq = Utils::sqr(isect.mDist);
-					const float raySamplePdfInv = 1.0f / raySamplePdf;
-					mCameraVerticesMisData[cameraState.mPathLength].mPdfAInv = cameraState.mLastPdfWInv * distSq * raySamplePdfInv / std::abs(bsdf.CosThetaFix());
-					mCameraVerticesMisData[cameraState.mPathLength].mRevPdfA = 1.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfInv = raySamplePdfInv;
-					mCameraVerticesMisData[cameraState.mPathLength].mRaySampleRevPdfInv = 1.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mSinTheta = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mCosThetaOut = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mSurfMisWeightFactor = bsdf.IsOnSurface() ? (isect.mLightID >= 0 ? 0.0f : mSurfMisWeightFactor) : 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mPP3DMisWeightFactor = bsdf.IsOnSurface() ? 0.0f : mPP3DMisWeightFactor;
-					mCameraVerticesMisData[cameraState.mPathLength].mPB2DMisWeightFactor = bsdf.IsOnSurface() ? 0.0f : mPB2DMisWeightFactor;
-					mCameraVerticesMisData[cameraState.mPathLength].mBB1DMisWeightFactor = bsdf.IsOnSurface() ? 0.0f : mBB1DMisWeightFactor;
-					mCameraVerticesMisData[cameraState.mPathLength].mBB1DBeamSelectionPdf = bsdf.IsOnSurface() ? 0.0f : ((mMergeWithLightVerticesBB1D && !mPhotonBeamsArray.empty() && mBB1DPhotonBeams.sMaxBeamsInCell) ? mBB1DPhotonBeams.getBeamSelectionPdf(hitPoint) : 1.0f);
-					mCameraVerticesMisData[cameraState.mPathLength].mIsDelta = isect.mLightID >= 0 ? false : bsdf.IsDelta();
-					mCameraVerticesMisData[cameraState.mPathLength].mIsOnLightSource = isect.mLightID >= 0;
-					mCameraVerticesMisData[cameraState.mPathLength].mIsSpecular = false;
-					mCameraVerticesMisData[cameraState.mPathLength].mInMediumWithBeams = bsdf.IsOnSurface() ? false : (!mMergeWithLightVerticesPB2D || bsdf.GetMedium()->GetMeanFreePath(hitPoint) > mBB1DMinMFP);
-
-					mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio = 0.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mRaySampleRevPdfsRatio = 0.0f;
-					if (bsdf.IsInMedium())
-					{
-						if (bsdf.GetMedium()->IsHomogeneous())
-						{
-							mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio = 1.0f / ((const HomogeneousMedium*)bsdf.GetMedium())->mMinPositiveAttenuationCoefComp();
-							mCameraVerticesMisData[cameraState.mPathLength].mRaySampleRevPdfsRatio = mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio;
-						}
-						else
-						{
-							const float lastSegmentRayOverSamplePdf = bsdf.GetMedium()->RaySamplePdf(ray, mVolumeSegments.back().mDistMin, mVolumeSegments.back().mDistMax, 0);
-							const float lastSegmentRayInSamplePdf = mVolumeSegments.back().mRaySamplePdf; // We are in medium -> we know we have insampled
-							mCameraVerticesMisData[cameraState.mPathLength].mRaySamplePdfsRatio = lastSegmentRayOverSamplePdf / lastSegmentRayInSamplePdf;
-						}
-					}
-
-					// Update reverse PDFs of the previous vertex
-					mCameraVerticesMisData[cameraState.mPathLength - 1].mRevPdfA *= raySampleRevPdf / distSq;
-					mCameraVerticesMisData[cameraState.mPathLength - 1].mRaySampleRevPdfInv = 1.0f / raySampleRevPdf;
-
-					if (lastMedium && !lastMedium->IsHomogeneous()) // Homogeneous case was solved immediately when processing the vertex for the first time
-					{
-						float firstSegmentRayOverSampleRevPdf;
-						lastMedium->RaySamplePdf(ray, mVolumeSegments.front().mDistMin, mVolumeSegments.front().mDistMax, 0, &firstSegmentRayOverSampleRevPdf);
-						const float firstSegmentRayInSampleRevPdf = mVolumeSegments.front().mRaySampleRevPdf; // We were in medium -> we know we have insampled
-						mCameraVerticesMisData[cameraState.mPathLength - 1].mRaySampleRevPdfsRatio = firstSegmentRayOverSampleRevPdf / firstSegmentRayInSampleRevPdf;
-					}
-				}
-
-				// Light source has been hit; terminate afterwards, since
-				// our light sources do not have reflective properties
-				if (isect.mLightID >= 0)
-				{
-					// We cannot end yet
-					if (cameraState.mPathLength < mMinPathLength)
-						break;
-
-					// Stop if we are in the light sampling mode and could have sampled this light last time in the next event estimation
-					if (mAlgorithm == kPTls && cameraState.mPathLength > 1 && !cameraState.mLastSpecular)
-						break;
-
-					// Get hit light
-					const AbstractLight *light = mScene.GetLightPtr(isect.mLightID);
-					UPBP_ASSERT(light);
-
-					// Add its contribution
-					mDebugImages.ResetTemp();
-					const Rgb contrib = cameraState.mThroughput *
-						GetLightRadiance(light, cameraState, hitPoint);
-					color += contrib;
-					const Rgb debugRgb = cameraState.mThroughput * mDebugImages.getTempRGB();
-					mDebugImages.addSample(cameraState.mPathLength, 0, DebugImages::BPT, screenSample, debugRgb, debugRgb * mDebugImages.getTempMisWeight(), mDebugImages.getTempMisWeight());
-					break;
-				}
-
-				// Terminate if eye sub-path is too long for connections or merging
-				if (cameraState.mPathLength >= mMaxPathLength)
-					break;
-
-				// Ignore contribution of primary rays from medium too close to camera
-				if (cameraState.mPathLength > 1 || bsdf.IsOnSurface() || isect.mDist >= mMinDistToMed)
-				{
-					////////////////////////////////////////////////////////////////
-					// Vertex connection: Connect to a light source
-					if (mConnectToLightSource && !bsdf.IsDelta() && cameraState.mPathLength + 1 >= mMinPathLength && mScene.GetLightCount() > 0 && (bsdf.IsInMedium() || !onlySpecSurf))
-					{
-						mDebugImages.ResetTemp();
-						color += cameraState.mThroughput *
-							DirectIllumination(cameraState, hitPoint, bsdf);
-						const Rgb debugRgb = cameraState.mThroughput * mDebugImages.getTempRGB();
-						mDebugImages.addSample(cameraState.mPathLength + 1, 0, DebugImages::BPT, screenSample, debugRgb, debugRgb * mDebugImages.getTempMisWeight(), mDebugImages.getTempMisWeight());
-					}
-
-					////////////////////////////////////////////////////////////////
-					// Vertex connection: Connect to light vertices
-					if (mConnectToLightVertices && !bsdf.IsDelta() && !mLightVertices.empty() && (bsdf.IsInMedium() || !onlySpecSurf))
-					{
-						// Determine whether the vertex is in medium behind real geometry
-						bool behindSurf = false;
-						if (bsdf.IsInMedium() && !cameraState.mBoundaryStack.IsEmpty())
-						{
-							int matId = cameraState.mBoundaryStack.Top().mMaterialId;
-							if (matId >= 0)
-							{
-								const Material& mat = mScene.GetMaterial(matId);
-								if (mat.mGeometryType != GeometryType::IMAGINARY)
-									behindSurf = true;
-							}
-						}
-
-						int pathIdxMod = mRng.GetUint() % pathCountL;
-
-						// For VC, each light sub-path is assigned to a particular eye
-						// sub-path, as in traditional BPT. It is also possible to
-						// connect to vertices from any light path, but MIS should
-						// be revisited.
-						const Vec2i range(
-							(pathIdxMod == 0) ? 0 : mPathEnds[pathIdxMod - 1],
-							mPathEnds[pathIdxMod]);
-
-						for (int i = range[0]; i < range[1]; i++)
-						{
-							const UPBPLightVertex &lightVertex = mLightVertices[i];
-
-							if (lightVertex.mPathLength + 1 +
-								cameraState.mPathLength < mMinPathLength)
-								continue;
-
-							// Light vertices are stored in increasing path length
-							// order; once we go above the max path length, we can
-							// skip the rest
-							if (lightVertex.mPathLength + 1 +
-								cameraState.mPathLength > mMaxPathLength)
-								break;
-
-							// We store all light vertices in order to compute MIS weights but not all can be used for VC
-							if (!lightVertex.mConnectable)
-								continue;
-
-							// Don't try connect vertices in different media with real geometry
-							if (lightVertex.mBSDF.IsInMedium() && bsdf.IsInMedium() && lightVertex.mBSDF.GetMedium() != bsdf.GetMedium()
-								&& (lightVertex.mBehindSurf || behindSurf))
-								continue;
-
-							const Rgb mult = cameraState.mThroughput * lightVertex.mThroughput;
-							mDebugImages.ResetTemp();
-							color += mult * ConnectVertices(lightVertex, bsdf, hitPoint, cameraState);
-							const Rgb debugRgb = mult * mDebugImages.getTempRGB();
-							mDebugImages.addSample(cameraState.mPathLength + 1, lightVertex.mPathLength, DebugImages::BPT, screenSample, debugRgb, debugRgb * mDebugImages.getTempMisWeight(), mDebugImages.getTempMisWeight());
-						}
-					}
-
-					////////////////////////////////////////////////////////////////
-					// Vertex merging: surface photon mapping
-					if (mMergeWithLightVerticesSurf && bsdf.IsOnSurface() && !bsdf.IsDelta() && mLightVerticesOnSurfaceCount > 0 && !onlySpecSurf)
-					{
-						mDebugImages.ResetAccum();
-						RangeQuery query(*this, hitPoint, bsdf, cameraState, mDebugImages);
-						mSurfHashGrid.Process(mLightVertices, query);
-						const Rgb mult = cameraState.mThroughput * mSurfNormalization;
-						color += mult * query.GetContrib();
-						mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::SURFACE_PHOTON_MAPPING, screenSample, mult);
-
-						// PPM merges only at the first non-specular surface from camera
-						if (mAlgorithm == kPPM) break;
-					}
-
-					////////////////////////////////////////////////////////////////
-					// Vertex merging: point x point 3D
-					if (mMergeWithLightVerticesPP3D && bsdf.IsInMedium() && !bsdf.IsDelta() && mLightVerticesInMediumCount > 0)
-					{
-						mDebugImages.ResetAccum();
-						RangeQuery query(*this, hitPoint, bsdf, cameraState, mDebugImages);
-						mPP3DHashGrid.Process(mLightVertices, query);
-						const Rgb mult = cameraState.mThroughput * mPP3DNormalization;
-						color += mult * query.GetContrib();
-						mDebugImages.addAccumulatedLightSample(cameraState.mPathLength, DebugImages::PP3D, screenSample, mult);
-					}
-				}
-
-				// Continue random walk
-				if (!SampleScattering(bsdf, hitPoint, isect, cameraState, mCameraVerticesMisData[cameraState.mPathLength], mCameraVerticesMisData[cameraState.mPathLength - 1]))
-					break;
-
-				if (bsdf.IsOnSurface())
-				{
-					if (!cameraState.mLastSpecular)
-					{
-						if (onlySpecSurf || (mEstimatorTechniques & SPECULAR_ONLY))
-							break;
-
-						if (mEstimatorTechniques & BB1D_PREVIOUS)
-							stopBB1D = true;
-					}
-
-					lastMedium = NULL;
-				}
-				else
-				{
-					if (mEstimatorTechniques & SPECULAR_ONLY)
-						break;
-
-					if (onlySpecSurf)
-					{
-						if (mEstimatorTechniques & COMPATIBLE)
-							onlySpecSurf = false;
-						else
-							break;
-					}
-
-					if (mEstimatorTechniques & BB1D_PREVIOUS)
-						stopBB1D = true;
-
-					lastMedium = bsdf.GetMedium();
-				}
+				mPB2DEmbreeBre.destroy();
 			}
 
-			mFramebuffer.AddColor(screenSample, color);
+			// Delete stored photon beams
+			if (mMergeWithLightVerticesBB1D && mMaxPathLength > 1 && !mPhotonBeamsArray.empty())
+			{
+				mBB1DPhotonBeams.destroy();
+			}
 		}
-
-		mTimer.Stop();
-		if (mVerbose)
-			std::cout << std::setprecision(3) << "   - camera sub-path tracing done in " << mTimer.GetLastElapsedTime() << " sec. " << std::endl;
-
-		mCameraTracingTime += mTimer.GetLastElapsedTime();
-
-		// Delete stored photons
-		if (mMergeWithLightVerticesPB2D && mMaxPathLength > 1 && !mLightVertices.empty())
-		{
-			mPB2DEmbreeBre.destroy();
-		}
-
-		// Delete stored photon beams
-		if (mMergeWithLightVerticesBB1D && mMaxPathLength > 1 && !mPhotonBeamsArray.empty())
-		{
-			mBB1DPhotonBeams.destroy();
-		}
-
+		
 		mIterations++;
 	}
 
@@ -1191,10 +1197,11 @@ private:
 
 	// Generates new camera sample given a pixel index
 	Vec2f GenerateCameraSample(
+		const int    aCameraID,
 		const int    aPixelIndex,
 		SubPathState &oCameraState)
 	{
-		const Camera &camera = mScene.mCamera;
+		const Camera &camera = *mScene.mCameras[aCameraID];
 		const int resX = int(camera.mResolution.get(0));
 		const int resY = int(camera.mResolution.get(1));
 		
@@ -1662,6 +1669,7 @@ private:
 	// Computes contribution of light sample to camera by splatting is onto the
 	// framebuffer. Multiplies by throughput (obviously, as nothing is returned).
 	void ConnectToCamera(
+		const int          aCameraID,
 		const int          aLightPathIdx,
 		const SubPathState &aLightState,
 		const Pos          &aHitpoint,
@@ -1669,7 +1677,7 @@ private:
 		const float        aRaySampleRevPdfsRatio)
 	{
 		// Get camera and direction to it
-		const Camera &camera = mScene.mCamera;
+		const Camera &camera = *mScene.mCameras[aCameraID];
 		Dir directionToCamera = camera.mOrigin - aHitpoint;
 
 		// Check point is in front of camera
@@ -1775,7 +1783,7 @@ private:
 
 			contrib *= misWeight;
 
-			mFramebuffer.AddColor(imagePos, contrib);
+			(*mFramebuffers[aCameraID]).AddColor(imagePos, contrib);
 		}
 	}
 

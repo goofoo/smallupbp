@@ -49,167 +49,172 @@ public:
 		// We sample lights uniformly
 		const int   lightCount    = mScene.GetLightCount();
 		const float lightPickProb = 1.f / lightCount;
-
-		const int resX = int(mScene.mCamera.mResolution.get(0));
-		const int resY = int(mScene.mCamera.mResolution.get(1));
-
-		for(int pixID = 0; pixID < resX * resY; pixID++)
+		for (size_t camID = 0; camID < mScene.mCameras.size(); camID++)
 		{
-			const int x = pixID % resX;
-			const int y = pixID / resX;
+			Camera &cam = *mScene.mCameras[camID];
+			Framebuffer &fbuffer = *mFramebuffers[camID];
 
-			const Vec2f sample = Vec2f(float(x), float(y)) + mRng.GetVec2f();
+			const int resX = int(cam.mResolution.get(0));
+			const int resY = int(cam.mResolution.get(1));
 
-			Ray ray = mScene.mCamera.GenerateRay(sample);
-			Isect isect(1e36f);
+			for (int pixID = 0; pixID < resX * resY; pixID++)
+			{
+				const int x = pixID % resX;
+				const int y = pixID / resX;
 
-			Rgb pathWeight(1.f);
-			Rgb color(0.f);
-			uint  pathLength   = 1;
-			bool  lastSpecular = true;
-			float lastPdfW     = 1;
+				const Vec2f sample = Vec2f(float(x), float(y)) + mRng.GetVec2f();
 
-			mScene.InitBoundaryStack(mBoundaryStack);
+				Ray ray = cam.GenerateRay(sample);
+				Isect isect(1e36f);
 
-			for(;; ++pathLength)
-			{				
-				if(!mScene.Intersect(ray, isect, mBoundaryStack))
+				Rgb pathWeight(1.f);
+				Rgb color(0.f);
+				uint  pathLength = 1;
+				bool  lastSpecular = true;
+				float lastPdfW = 1;
+
+				mScene.InitBoundaryStack(mBoundaryStack);
+
+				for (;; ++pathLength)
 				{
-					if(pathLength < mMinPathLength)
-						break;
-
-					const BackgroundLight* background = mScene.GetBackground();
-					if(!background)
-						break;
-					// For background we cheat with the A/W suffixes,
-					// and GetRadiance actually returns W instead of A
-					float directPdfW;
-					Rgb contrib = background->GetRadiance(mScene.mSceneSphere,
-						ray.direction, Pos(0), &directPdfW);
-					if(contrib.isBlackOrNegative())
-						break;
-
-					float misWeight = 1.f;
-					if(pathLength > 1 && !lastSpecular)
+					if (!mScene.Intersect(ray, isect, mBoundaryStack))
 					{
-						misWeight = Mis2(lastPdfW, directPdfW * lightPickProb);
-					}
-
-					color += pathWeight * misWeight * contrib;
-					break;
-				}
-
-				Pos hitPoint = ray.origin + ray.direction * isect.mDist;
-
-				BSDF bsdf(ray, isect, mScene, BSDF::kFromCamera, mScene.RelativeIOR(isect, mBoundaryStack));
-				if(!bsdf.IsValid())
-					break;
-
-				// directly hit some light, lights do not reflect
-				if(isect.mLightID >= 0)
-				{
-					if(pathLength < mMinPathLength)
-						break;
-
-					const AbstractLight *light = mScene.GetLightPtr(isect.mLightID);
-					float directPdfA;
-					Rgb contrib = light->GetRadiance(mScene.mSceneSphere,
-						ray.direction, hitPoint, &directPdfA);
-					if(contrib.isBlackOrNegative())
-						break;
-
-					float misWeight = 1.f;
-					if(pathLength > 1 && !lastSpecular)
-					{
-						const float directPdfW = PdfAtoW(directPdfA, isect.mDist,
-							bsdf.CosThetaFix());
-						misWeight = Mis2(lastPdfW, directPdfW * lightPickProb);
-					}
-
-					color += pathWeight * misWeight * contrib;
-					break;
-				}
-
-				if(pathLength >= mMaxPathLength)
-					break;
-
-				if(bsdf.ContinuationProb() == 0)
-					break;
-
-				// next event estimation
-				if(!bsdf.IsDelta() && pathLength + 1 >= mMinPathLength && lightCount > 0)
-				{
-					int lightID = int(mRng.GetFloat() * lightCount);
-					const AbstractLight *light = mScene.GetLightPtr(lightID);
-
-					Dir directionToLight;
-					float distance, directPdfW;
-					Rgb radiance = light->Illuminate(mScene.mSceneSphere, hitPoint,
-						mRng.GetVec2f(), directionToLight, distance, directPdfW);
-
-					if(!radiance.isBlackOrNegative())
-					{
-						float bsdfPdfW, cosThetaOut;
-						const Rgb factor = bsdf.Evaluate(directionToLight, cosThetaOut, &bsdfPdfW);
-
-						if(!factor.isBlackOrNegative())
-						{
-							float weight = 1.f;
-							if(!light->IsDelta())
-							{
-								const float contProb = bsdf.ContinuationProb();
-								bsdfPdfW *= contProb;
-								weight = Mis2(directPdfW * lightPickProb, bsdfPdfW);
-							}
-
-							Rgb contrib = (weight * cosThetaOut / (lightPickProb * directPdfW)) *
-								(radiance * factor);
-
-							if(!mScene.Occluded(hitPoint, directionToLight, distance, mBoundaryStack))
-							{
-								color += pathWeight * contrib;
-							}
-						}
-					}
-				}
-
-				// continue random walk
-				{
-					Dir rndTriplet = mRng.GetVec3f();
-					float pdf, cosThetaOut;
-					uint  sampledEvent;
-
-					Rgb factor = bsdf.Sample(rndTriplet, ray.direction,
-						pdf, cosThetaOut, &sampledEvent);
-
-					if(factor.isBlackOrNegative())
-						break;
-
-					// Russian roulette
-					const float contProb = bsdf.ContinuationProb();
-
-					lastSpecular = (sampledEvent & BSDF::kSpecular) != 0;
-					lastPdfW     = pdf * contProb;
-
-					if(contProb < 1.f)
-					{
-						if(mRng.GetFloat() > contProb)
-						{
+						if (pathLength < mMinPathLength)
 							break;
+
+						const BackgroundLight* background = mScene.GetBackground();
+						if (!background)
+							break;
+						// For background we cheat with the A/W suffixes,
+						// and GetRadiance actually returns W instead of A
+						float directPdfW;
+						Rgb contrib = background->GetRadiance(mScene.mSceneSphere,
+							ray.direction, Pos(0), &directPdfW);
+						if (contrib.isBlackOrNegative())
+							break;
+
+						float misWeight = 1.f;
+						if (pathLength > 1 && !lastSpecular)
+						{
+							misWeight = Mis2(lastPdfW, directPdfW * lightPickProb);
 						}
-						pdf *= contProb;
+
+						color += pathWeight * misWeight * contrib;
+						break;
 					}
 
-					pathWeight *= factor * (cosThetaOut / pdf);
+					Pos hitPoint = ray.origin + ray.direction * isect.mDist;
 
-					if ((sampledEvent & BSDF::kRefract) != 0)
-						mScene.UpdateBoundaryStackOnRefract(isect, mBoundaryStack);
+					BSDF bsdf(ray, isect, mScene, BSDF::kFromCamera, mScene.RelativeIOR(isect, mBoundaryStack));
+					if (!bsdf.IsValid())
+						break;
 
-					ray.origin  = hitPoint;
-					isect.mDist = 1e36f;
+					// directly hit some light, lights do not reflect
+					if (isect.mLightID >= 0)
+					{
+						if (pathLength < mMinPathLength)
+							break;
+
+						const AbstractLight *light = mScene.GetLightPtr(isect.mLightID);
+						float directPdfA;
+						Rgb contrib = light->GetRadiance(mScene.mSceneSphere,
+							ray.direction, hitPoint, &directPdfA);
+						if (contrib.isBlackOrNegative())
+							break;
+
+						float misWeight = 1.f;
+						if (pathLength > 1 && !lastSpecular)
+						{
+							const float directPdfW = PdfAtoW(directPdfA, isect.mDist,
+								bsdf.CosThetaFix());
+							misWeight = Mis2(lastPdfW, directPdfW * lightPickProb);
+						}
+
+						color += pathWeight * misWeight * contrib;
+						break;
+					}
+
+					if (pathLength >= mMaxPathLength)
+						break;
+
+					if (bsdf.ContinuationProb() == 0)
+						break;
+
+					// next event estimation
+					if (!bsdf.IsDelta() && pathLength + 1 >= mMinPathLength && lightCount > 0)
+					{
+						int lightID = int(mRng.GetFloat() * lightCount);
+						const AbstractLight *light = mScene.GetLightPtr(lightID);
+
+						Dir directionToLight;
+						float distance, directPdfW;
+						Rgb radiance = light->Illuminate(mScene.mSceneSphere, hitPoint,
+							mRng.GetVec2f(), directionToLight, distance, directPdfW);
+
+						if (!radiance.isBlackOrNegative())
+						{
+							float bsdfPdfW, cosThetaOut;
+							const Rgb factor = bsdf.Evaluate(directionToLight, cosThetaOut, &bsdfPdfW);
+
+							if (!factor.isBlackOrNegative())
+							{
+								float weight = 1.f;
+								if (!light->IsDelta())
+								{
+									const float contProb = bsdf.ContinuationProb();
+									bsdfPdfW *= contProb;
+									weight = Mis2(directPdfW * lightPickProb, bsdfPdfW);
+								}
+
+								Rgb contrib = (weight * cosThetaOut / (lightPickProb * directPdfW)) *
+									(radiance * factor);
+
+								if (!mScene.Occluded(hitPoint, directionToLight, distance, mBoundaryStack))
+								{
+									color += pathWeight * contrib;
+								}
+							}
+						}
+					}
+
+					// continue random walk
+					{
+						Dir rndTriplet = mRng.GetVec3f();
+						float pdf, cosThetaOut;
+						uint  sampledEvent;
+
+						Rgb factor = bsdf.Sample(rndTriplet, ray.direction,
+							pdf, cosThetaOut, &sampledEvent);
+
+						if (factor.isBlackOrNegative())
+							break;
+
+						// Russian roulette
+						const float contProb = bsdf.ContinuationProb();
+
+						lastSpecular = (sampledEvent & BSDF::kSpecular) != 0;
+						lastPdfW = pdf * contProb;
+
+						if (contProb < 1.f)
+						{
+							if (mRng.GetFloat() > contProb)
+							{
+								break;
+							}
+							pdf *= contProb;
+						}
+
+						pathWeight *= factor * (cosThetaOut / pdf);
+
+						if ((sampledEvent & BSDF::kRefract) != 0)
+							mScene.UpdateBoundaryStackOnRefract(isect, mBoundaryStack);
+
+						ray.origin = hitPoint;
+						isect.mDist = 1e36f;
+					}
 				}
+				fbuffer.AddColor(sample, color);
 			}
-			mFramebuffer.AddColor(sample, color);
 		}
 
 		mIterations++;

@@ -46,34 +46,39 @@ public:
 
     virtual void RunIteration(int aIteration)
     {
-        const int resX = int(mScene.mCamera.mResolution.get(0));
-        const int resY = int(mScene.mCamera.mResolution.get(1));
+		for (size_t camID = 0; camID < mScene.mCameras.size(); camID++)
+		{
+			Camera &cam = *mScene.mCameras[camID];
+			Framebuffer &fbuffer = *mFramebuffers[camID];
+			const int resX = int(cam.mResolution.get(0));
+			const int resY = int(cam.mResolution.get(1));
 
-        for(int pixID = 0; pixID < resX * resY; pixID++)
-        {
-            //////////////////////////////////////////////////////////////////////////
-            // Generate ray
-            const int x = pixID % resX;
-            const int y = pixID / resX;
+			for (int pixID = 0; pixID < resX * resY; pixID++)
+			{
+				//////////////////////////////////////////////////////////////////////////
+				// Generate ray
+				const int x = pixID % resX;
+				const int y = pixID / resX;
 
-            const Vec2f sample = Vec2f(float(x), float(y)) +
-                (aIteration == 1 ? Vec2f(0.5f) : mRng.GetVec2f());
+				const Vec2f sample = Vec2f(float(x), float(y)) +
+					(aIteration == 1 ? Vec2f(0.5f) : mRng.GetVec2f());
 
-            Ray   ray = mScene.mCamera.GenerateRay(sample);
-            Isect isect(1e36f);
+				Ray   ray = cam.GenerateRay(sample);
+				Isect isect(1e36f);
 
-			mScene.InitBoundaryStack(mBoundaryStack);
+				mScene.InitBoundaryStack(mBoundaryStack);
 
-            if(mScene.Intersect(ray, isect, mBoundaryStack))
-            {
-				float dotLN = dot(isect.mNormal, -ray.direction);
+				if (mScene.Intersect(ray, isect, mBoundaryStack))
+				{
+					float dotLN = dot(isect.mNormal, -ray.direction);
 
-                if(dotLN > 0)
-                    mFramebuffer.AddColor(sample, Rgb(dotLN));
-                else
-                    mFramebuffer.AddColor(sample, Rgb(-dotLN, 0, 0));
-            }
-        }
+					if (dotLN > 0)
+						fbuffer.AddColor(sample, Rgb(dotLN));
+					else
+						fbuffer.AddColor(sample, Rgb(-dotLN, 0, 0));
+				}
+			}
+		}
 
         mIterations++;
     }

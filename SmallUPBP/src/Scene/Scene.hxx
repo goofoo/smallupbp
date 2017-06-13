@@ -187,11 +187,18 @@ public:
 	};
 
 public:
-    Scene() :
-        mRealGeometry(NULL),
+	Scene(int aNumCameras = 1) :
+		mRealGeometry(NULL),
 		mImaginaryGeometry(NULL),
-        mBackground(NULL)
-    {}
+		mBackground(NULL)
+	{
+		int numCameras = std::max(aNumCameras, 1);
+		UPBP_ASSERT(numCameras >= 1);
+		for (size_t i = 0; i < numCameras; i++)
+		{
+			mCameras.push_back(new Camera());
+		}
+	}
 
     ~Scene()
     {
@@ -203,6 +210,9 @@ public:
 
 		for(size_t i=0; i<mMedia.size(); i++)
             delete mMedia[i];
+
+		for (size_t i = 0; i<mCameras.size(); i++)
+			delete mCameras[i];
     }
 
 	enum IntersectOptions
@@ -731,12 +741,16 @@ public:
     {
 		mSceneAcronym = aSceneConfig.mShortName;
 		mSceneName = aSceneConfig.mLongName;
-
-		mCamera.Setup(
-            Pos(-0.0439815f, -4.12529f, 0.222539f),
-            Pos(-0.03709525f, -3.126785f, 0.1683229f),
-            Dir(3.73896e-4f, 0.0542148f, 0.998529f),
-            Vec2f(float(aResolution[0]), float(aResolution[1])), 45.0f, 1.0f);
+		for (size_t i = 0; i < mCameras.size(); i++)
+		{
+			float cameraOffset = (float)i * 0.01f;
+			(*mCameras[i]).Setup(
+				Pos(-0.0439815f, -4.12529f, 0.222539f),
+				Pos(-0.03709525f + cameraOffset, -3.126785f, 0.1683229f),
+				Dir(3.73896e-4f, 0.0542148f, 0.998529f),
+				Vec2f(float(aResolution[0]), float(aResolution[1])), 45.0f, 1.0f);
+		}
+		
 
 		//////////////////////////////////////////////////////////////////////////
 		// Materials
@@ -1167,13 +1181,18 @@ public:
 		//// Setup camera
 		int camMat = obj.camera().material - 1;
 		int camMed = camMat < 0 ? -1 : obj.materials()[camMat + 1].mediumId;
-		mCamera.Setup(
-			Pos(obj.camera().origin[0], obj.camera().origin[1], obj.camera().origin[2]),
-			Pos(obj.camera().target[0], obj.camera().target[1], obj.camera().target[2]),
-			Dir(obj.camera().roll[0], obj.camera().roll[1], obj.camera().roll[2]),
-			Vec2f(float(aResolution[0]), float(aResolution[1])),
-			obj.camera().horizontalFOV* 57.295779f,
-			obj.camera().focalDistance, camMat, camMed);
+		for (size_t i = 0; i < mCameras.size(); i++)
+		{
+			float cameraOffset = (float)i * 0.01f;
+			(*mCameras[i]).Setup(
+				Pos(obj.camera().origin[0], obj.camera().origin[1], obj.camera().origin[2]),
+				Pos(obj.camera().target[0] + cameraOffset, obj.camera().target[1], obj.camera().target[2]),
+				Dir(obj.camera().roll[0], obj.camera().roll[1], obj.camera().roll[2]),
+				Vec2f(float(aResolution[0]), float(aResolution[1])),
+				obj.camera().horizontalFOV* 57.295779f,
+				obj.camera().focalDistance, camMat, camMed);
+		}
+		
 
 		// Handle materials
 		mMaterials.clear();
@@ -1351,7 +1370,7 @@ public:
 
     AbstractGeometry              *mRealGeometry;
 	AbstractGeometry              *mImaginaryGeometry;
-    Camera                        mCamera;
+	std::vector<Camera*>          mCameras;
     std::vector<Material>         mMaterials;
 	std::vector<AbstractMedium*>  mMedia;
 	int                           mGlobalMediumID;

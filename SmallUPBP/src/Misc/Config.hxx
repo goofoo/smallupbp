@@ -1934,7 +1934,7 @@ void ParseCommandline(int argc, const char *argv[], Config &oConfig)
     }
 
     // Load scene.
-    Scene *scene = new Scene;
+    Scene *scene = new Scene(oConfig.mNumCameras);
 	if (sceneID > -1)
 		scene->LoadCornellBox(oConfig.mResolution, g_SceneConfigs[sceneID]);
 	else

@@ -98,335 +98,341 @@ public:
 
     virtual void RunIteration(int aIteration)
     {
-		// Get path count, one path for each pixel
-        const int resX = int(mScene.mCamera.mResolution.get(0));
-        const int resY = int(mScene.mCamera.mResolution.get(1));
-        const int pathCount = resX * resY;
+		for (size_t camID = 0; camID < mScene.mCameras.size(); camID++)
+		{
+			Camera &cam = *mScene.mCameras[camID];
+			Framebuffer &fbuffer = *mFramebuffers[camID];
 
-		// While we have the same number of pixels (camera paths)
-        // and light paths, we do keep them separate for clarity reasons
-        mScreenPixelCount  = float(pathCount);
-        mLightSubPathCount = float(pathCount);
+			// Get path count, one path for each pixel
+			const int resX = int(cam.mResolution.get(0));
+			const int resY = int(cam.mResolution.get(1));
+			const int pathCount = resX * resY;
 
-        // Clear path ends, nothing ends anywhere
-        mPathEnds.resize(pathCount);
-        memset(&mPathEnds[0], 0, mPathEnds.size() * sizeof(int));
+			// While we have the same number of pixels (camera paths)
+			// and light paths, we do keep them separate for clarity reasons
+			mScreenPixelCount = float(pathCount);
+			mLightSubPathCount = float(pathCount);
 
-        // Remove all light vertices and reserve space for some		
-		mLightVertices.reserve(pathCount * mMaxPathLength);
-        mLightVertices.clear();
+			// Clear path ends, nothing ends anywhere
+			mPathEnds.resize(pathCount);
+			memset(&mPathEnds[0], 0, mPathEnds.size() * sizeof(int));
 
-        //////////////////////////////////////////////////////////////////////////
-        // Generate light paths
-        //////////////////////////////////////////////////////////////////////////
-		
-		// If there are no lights, only one path segment is allowed or pure path tracing is used, light tracing step is skipped
-		if (mScene.GetLightCount() > 0 && mMaxPathLength > 1 && (mAlgorithm == kLT || mAlgorithm == kBPT))
-			for (int pathIdx = 0; pathIdx < pathCount; pathIdx++)
-        {			
-			// Generate light path origin and direction
-			SubPathState lightState;
-            GenerateLightSample(lightState);
+			// Remove all light vertices and reserve space for some		
+			mLightVertices.reserve(pathCount * mMaxPathLength);
+			mLightVertices.clear();
 
-			// In attenuating media the ray can never travel from infinity
-			if (!lightState.mIsFiniteLight && !mScene.GetGlobalMediumPtr()->GetAttenuationCoef(lightState.mOrigin).isBlackOrNegative())
-				continue;
+			//////////////////////////////////////////////////////////////////////////
+			// Generate light paths
+			//////////////////////////////////////////////////////////////////////////
 
-			// We assume that the light is on surface
-			bool originInMedium = false;
-
-            //////////////////////////////////////////////////////////////////////////
-            // Trace light path
-            for (;; ++lightState.mPathLength)
-            {
-                // Prepare ray
-				Ray ray(lightState.mOrigin, lightState.mDirection);
-                Isect isect(1e36f);
-
-				// Trace ray
-				mVolumeSegments.clear();
-				if (!mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, mVolumeSegments))
-                    break;
-
-				UPBP_ASSERT(isect.IsValid());
-				
-				// Attenuate by intersected media (if any)
-				float raySamplePdf(1.0f);
-				float raySampleRevPdf(1.0f);
-				if (!mVolumeSegments.empty())
-				{					
-					// PDF
-					raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
-					UPBP_ASSERT(raySamplePdf > 0);
-
-					// Reverse PDF
-					raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
-					UPBP_ASSERT(raySampleRevPdf > 0);
-					
-					// Attenuation
-					lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;					
-				}
-
-				if (lightState.mThroughput.isBlackOrNegative()) 
-					break;
-
-                // Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
-				BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
-            
-				if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
-					break;
-
-				// Compute hitpoint
-                const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
-
-				originInMedium = isect.IsInMedium();
-
-				// Store vertex
-
-				PathVertex lightVertex;
-				lightVertex.mHitpoint    = hitPoint;
-				lightVertex.mThroughput  = lightState.mThroughput;
-				lightVertex.mPathLength  = lightState.mPathLength;
-				lightVertex.mInMedium    = originInMedium;
-				lightVertex.mConnectable = !bsdf.IsDelta();
-				lightVertex.mBSDF        = bsdf;				
-
-				// Infinite lights use MIS handled via solid angle integration, so do not divide by the distance for such lights
-				const float distSq = (lightState.mPathLength > 1 || lightState.mIsFiniteLight == 1) ? Utils::sqr(isect.mDist) : 1.0f;
-				lightVertex.mMisData.mPdfAInv            = lightState.mLastPdfWInv * distSq / (raySamplePdf * std::abs(bsdf.CosThetaFix()));	
-				lightVertex.mMisData.mRevPdfA            = 1.0f;
-				lightVertex.mMisData.mRevPdfAWithoutBsdf = lightVertex.mMisData.mRevPdfA;
-				lightVertex.mMisData.mIsDelta            = bsdf.IsDelta();
-				lightVertex.mMisData.mIsOnLightSource    = false;
-				lightVertex.mMisData.mIsSpecular         = false;
-
-				// Update reverse PDFs of the previous vertex
-				mLightVertices.back().mMisData.mRevPdfA           *= raySampleRevPdf / distSq;
-				mLightVertices.back().mMisData.mRevPdfAWithoutBsdf = mLightVertices.back().mMisData.mRevPdfA;
-
-				mLightVertices.push_back(lightVertex);
-
-				// Connect to camera, unless scattering function is purely specular
-				if (!bsdf.IsDelta())
+			// If there are no lights, only one path segment is allowed or pure path tracing is used, light tracing step is skipped
+			if (mScene.GetLightCount() > 0 && mMaxPathLength > 1 && (mAlgorithm == kLT || mAlgorithm == kBPT))
+				for (int pathIdx = 0; pathIdx < pathCount; pathIdx++)
 				{
-                    if (lightState.mPathLength + 1 >= mMinPathLength)
-                        ConnectToCamera(pathIdx, lightState, hitPoint, bsdf);
-                }
+					// Generate light path origin and direction
+					SubPathState lightState;
+					GenerateLightSample(lightState);
 
-                // Terminate if the path would become too long after scattering
-                if (lightState.mPathLength + 2 > mMaxPathLength)
-                    break;
+					// In attenuating media the ray can never travel from infinity
+					if (!lightState.mIsFiniteLight && !mScene.GetGlobalMediumPtr()->GetAttenuationCoef(lightState.mOrigin).isBlackOrNegative())
+						continue;
 
-                // Continue random walk
-				if (!SampleScattering(bsdf, hitPoint, isect, lightState, mLightVertices.back().mMisData, mLightVertices.at(mLightVertices.size() - 2).mMisData))
-                    break;
-            }
+					// We assume that the light is on surface
+					bool originInMedium = false;
 
-            mPathEnds[pathIdx] = (int)mLightVertices.size();
-        }
-
-        //////////////////////////////////////////////////////////////////////////
-        // Generate camera paths
-        //////////////////////////////////////////////////////////////////////////
-
-        // Unless rendering with traditional light tracing
-		if (mAlgorithm != kLT)
-			for (int pathIdx = 0; pathIdx < pathCount; ++pathIdx)
-        {
-			// Generate camera path origin and direction			
-			SubPathState cameraState;
-            const Vec2f screenSample = GenerateCameraSample(pathIdx, cameraState);
-            Rgb color(0);
-
-			// We assume that the camera is on surface
-			bool originInMedium = false;
-
-            //////////////////////////////////////////////////////////////////////
-            // Trace camera path
-            for(;; ++cameraState.mPathLength)
-            {
-                // Prepare ray
-                Ray ray(cameraState.mOrigin, cameraState.mDirection);
-                Isect isect(1e36f);
-
-                // Trace ray
-				mVolumeSegments.clear();
-				if (!mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, cameraState.mBoundaryStack, mVolumeSegments))
-                {					
-					// In attenuating media the ray can never travel to infinity
-					//UPBP_ASSERT(!mScene.GetGlobalMediumPtr()->HasAttenuation());
-					
-					// We cannot end yet
-					if (cameraState.mPathLength < mMinPathLength) 
-						break;					
-									
-					// Get background light					
-					const BackgroundLight* background = mScene.GetBackground();
-					if (!background) 
-						break;
-
-					// In attenuating media the ray can never travel to infinity
-					if (mScene.GetGlobalMediumPtr()->HasAttenuation())
-						break;
-
-					// Stop if we are in the light sampling mode and could have sampled this light last time in the next event estimation
-					if (mAlgorithm == kPTls && cameraState.mPathLength > 1 && !cameraState.mLastSpecular) 
-						break;
-
-					// Attenuate by intersected media (if any)
-					float raySamplePdf(1.0f);
-					float raySampleRevPdf(1.0f);
-					if (!mVolumeSegments.empty())
+					//////////////////////////////////////////////////////////////////////////
+					// Trace light path
+					for (;; ++lightState.mPathLength)
 					{
-						// PDF
-						raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
-						UPBP_ASSERT(raySamplePdf > 0);
+						// Prepare ray
+						Ray ray(lightState.mOrigin, lightState.mDirection);
+						Isect isect(1e36f);
 
-						// Reverse PDF
-						raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
-						UPBP_ASSERT(raySampleRevPdf > 0);
+						// Trace ray
+						mVolumeSegments.clear();
+						if (!mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, mVolumeSegments))
+							break;
 
-						// Attenuation
-						cameraState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;					
-					}				
+						UPBP_ASSERT(isect.IsValid());
 
-					if (cameraState.mThroughput.isBlackOrNegative()) 
-						break;
+						// Attenuate by intersected media (if any)
+						float raySamplePdf(1.0f);
+						float raySampleRevPdf(1.0f);
+						if (!mVolumeSegments.empty())
+						{
+							// PDF
+							raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
+							UPBP_ASSERT(raySamplePdf > 0);
 
-					// Update affected MIS data
-					mCameraVerticesMisData[cameraState.mPathLength].mPdfAInv         = cameraState.mLastPdfWInv / raySamplePdf;
-					mCameraVerticesMisData[cameraState.mPathLength].mRevPdfA         = 1.0f;
-					mCameraVerticesMisData[cameraState.mPathLength].mIsDelta         = false;
-					mCameraVerticesMisData[cameraState.mPathLength].mIsOnLightSource = true;
-					mCameraVerticesMisData[cameraState.mPathLength].mIsSpecular      = false;
-					mCameraVerticesMisData[cameraState.mPathLength - 1].mRevPdfA    *= raySampleRevPdf;
+							// Reverse PDF
+							raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
+							UPBP_ASSERT(raySampleRevPdf > 0);
 
-					// Accumulate contribution
-					color += cameraState.mThroughput *
-						GetLightRadiance(mScene.GetBackground(), cameraState, Pos(0));
+							// Attenuation
+							lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
+						}
 
-					break;
+						if (lightState.mThroughput.isBlackOrNegative())
+							break;
+
+						// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
+						BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
+
+						if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
+							break;
+
+						// Compute hitpoint
+						const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+
+						originInMedium = isect.IsInMedium();
+
+						// Store vertex
+
+						PathVertex lightVertex;
+						lightVertex.mHitpoint = hitPoint;
+						lightVertex.mThroughput = lightState.mThroughput;
+						lightVertex.mPathLength = lightState.mPathLength;
+						lightVertex.mInMedium = originInMedium;
+						lightVertex.mConnectable = !bsdf.IsDelta();
+						lightVertex.mBSDF = bsdf;
+
+						// Infinite lights use MIS handled via solid angle integration, so do not divide by the distance for such lights
+						const float distSq = (lightState.mPathLength > 1 || lightState.mIsFiniteLight == 1) ? Utils::sqr(isect.mDist) : 1.0f;
+						lightVertex.mMisData.mPdfAInv = lightState.mLastPdfWInv * distSq / (raySamplePdf * std::abs(bsdf.CosThetaFix()));
+						lightVertex.mMisData.mRevPdfA = 1.0f;
+						lightVertex.mMisData.mRevPdfAWithoutBsdf = lightVertex.mMisData.mRevPdfA;
+						lightVertex.mMisData.mIsDelta = bsdf.IsDelta();
+						lightVertex.mMisData.mIsOnLightSource = false;
+						lightVertex.mMisData.mIsSpecular = false;
+
+						// Update reverse PDFs of the previous vertex
+						mLightVertices.back().mMisData.mRevPdfA *= raySampleRevPdf / distSq;
+						mLightVertices.back().mMisData.mRevPdfAWithoutBsdf = mLightVertices.back().mMisData.mRevPdfA;
+
+						mLightVertices.push_back(lightVertex);
+
+						// Connect to camera, unless scattering function is purely specular
+						if (!bsdf.IsDelta())
+						{
+							if (lightState.mPathLength + 1 >= mMinPathLength)
+								ConnectToCamera(camID, pathIdx, lightState, hitPoint, bsdf);
+						}
+
+						// Terminate if the path would become too long after scattering
+						if (lightState.mPathLength + 2 > mMaxPathLength)
+							break;
+
+						// Continue random walk
+						if (!SampleScattering(bsdf, hitPoint, isect, lightState, mLightVertices.back().mMisData, mLightVertices.at(mLightVertices.size() - 2).mMisData))
+							break;
+					}
+
+					mPathEnds[pathIdx] = (int)mLightVertices.size();
 				}
 
-				UPBP_ASSERT(isect.IsValid());
+			//////////////////////////////////////////////////////////////////////////
+			// Generate camera paths
+			//////////////////////////////////////////////////////////////////////////
 
-				// Attenuate by intersected media (if any)
-				float raySamplePdf(1.0f);
-				float raySampleRevPdf(1.0f);
-				if (!mVolumeSegments.empty())
+			// Unless rendering with traditional light tracing
+			if (mAlgorithm != kLT)
+				for (int pathIdx = 0; pathIdx < pathCount; ++pathIdx)
 				{
-					// PDF
-					raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
-					UPBP_ASSERT(raySamplePdf > 0);
+					// Generate camera path origin and direction			
+					SubPathState cameraState;
+					const Vec2f screenSample = GenerateCameraSample(camID, pathIdx, cameraState);
+					Rgb color(0);
 
-					// Reverse PDF
-					raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
-					UPBP_ASSERT(raySampleRevPdf > 0);
+					// We assume that the camera is on surface
+					bool originInMedium = false;
 
-					// Attenuation
-					cameraState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;					
-				}				
+					//////////////////////////////////////////////////////////////////////
+					// Trace camera path
+					for (;; ++cameraState.mPathLength)
+					{
+						// Prepare ray
+						Ray ray(cameraState.mOrigin, cameraState.mDirection);
+						Isect isect(1e36f);
 
-				if (cameraState.mThroughput.isBlackOrNegative()) 
-					break;
+						// Trace ray
+						mVolumeSegments.clear();
+						if (!mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, cameraState.mBoundaryStack, mVolumeSegments))
+						{
+							// In attenuating media the ray can never travel to infinity
+							//UPBP_ASSERT(!mScene.GetGlobalMediumPtr()->HasAttenuation());
 
-				// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
-				BSDF bsdf(ray, isect, mScene, BSDF::kFromCamera, mScene.RelativeIOR(isect, cameraState.mBoundaryStack));
-				
-				if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
-					break;
+							// We cannot end yet
+							if (cameraState.mPathLength < mMinPathLength)
+								break;
 
-				// Compute hitpoint
-				Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+							// Get background light					
+							const BackgroundLight* background = mScene.GetBackground();
+							if (!background)
+								break;
 
-				originInMedium = isect.IsInMedium();
+							// In attenuating media the ray can never travel to infinity
+							if (mScene.GetGlobalMediumPtr()->HasAttenuation())
+								break;
 
-				// Update affected MIS data
-				const float distSq = Utils::sqr(isect.mDist);
-				mCameraVerticesMisData[cameraState.mPathLength].mPdfAInv         = cameraState.mLastPdfWInv * distSq / (raySamplePdf * std::abs(bsdf.CosThetaFix()));
-				mCameraVerticesMisData[cameraState.mPathLength].mRevPdfA         = 1.0f;
-				mCameraVerticesMisData[cameraState.mPathLength].mIsDelta         = bsdf.IsDelta();
-				mCameraVerticesMisData[cameraState.mPathLength].mIsOnLightSource = isect.mLightID >= 0;
-				mCameraVerticesMisData[cameraState.mPathLength].mIsSpecular      = false;
-				mCameraVerticesMisData[cameraState.mPathLength - 1].mRevPdfA    *= raySampleRevPdf / distSq;
+							// Stop if we are in the light sampling mode and could have sampled this light last time in the next event estimation
+							if (mAlgorithm == kPTls && cameraState.mPathLength > 1 && !cameraState.mLastSpecular)
+								break;
 
-                // Light source has been hit; terminate afterwards, since
-                // our light sources do not have reflective properties
-				if (isect.mLightID >= 0)
-                {
-                    // We cannot end yet
-					if (cameraState.mPathLength < mMinPathLength) 
-						break;
+							// Attenuate by intersected media (if any)
+							float raySamplePdf(1.0f);
+							float raySampleRevPdf(1.0f);
+							if (!mVolumeSegments.empty())
+							{
+								// PDF
+								raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
+								UPBP_ASSERT(raySamplePdf > 0);
 
-					// Stop if we are in the light sampling mode and could have sampled this light last time in the next event estimation
-					if (mAlgorithm == kPTls && cameraState.mPathLength > 1 && !cameraState.mLastSpecular) 
-						break;
-					
-					// Get hit light
-					const AbstractLight *light = mScene.GetLightPtr(isect.mLightID);
-					UPBP_ASSERT(light);
+								// Reverse PDF
+								raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
+								UPBP_ASSERT(raySampleRevPdf > 0);
 
-					// Add its contribution
-					color += cameraState.mThroughput *
-						GetLightRadiance(light, cameraState, hitPoint);
-                    
-                    break;
-                }
+								// Attenuation
+								cameraState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
+							}
 
-                // Terminate if eye sub-path is too long for connections or merging
-                if (cameraState.mPathLength >= mMaxPathLength)
-                    break;
+							if (cameraState.mThroughput.isBlackOrNegative())
+								break;
 
-                ////////////////////////////////////////////////////////////////
-                // Vertex connection: Connect to a light source
-				if (mAlgorithm != kPTdir && !bsdf.IsDelta() && cameraState.mPathLength + 1 >= mMinPathLength && mScene.GetLightCount() > 0)
-				{
-					color += cameraState.mThroughput *
-						DirectIllumination(cameraState, hitPoint, bsdf);
+							// Update affected MIS data
+							mCameraVerticesMisData[cameraState.mPathLength].mPdfAInv = cameraState.mLastPdfWInv / raySamplePdf;
+							mCameraVerticesMisData[cameraState.mPathLength].mRevPdfA = 1.0f;
+							mCameraVerticesMisData[cameraState.mPathLength].mIsDelta = false;
+							mCameraVerticesMisData[cameraState.mPathLength].mIsOnLightSource = true;
+							mCameraVerticesMisData[cameraState.mPathLength].mIsSpecular = false;
+							mCameraVerticesMisData[cameraState.mPathLength - 1].mRevPdfA *= raySampleRevPdf;
+
+							// Accumulate contribution
+							color += cameraState.mThroughput *
+								GetLightRadiance(mScene.GetBackground(), cameraState, Pos(0));
+
+							break;
+						}
+
+						UPBP_ASSERT(isect.IsValid());
+
+						// Attenuate by intersected media (if any)
+						float raySamplePdf(1.0f);
+						float raySampleRevPdf(1.0f);
+						if (!mVolumeSegments.empty())
+						{
+							// PDF
+							raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
+							UPBP_ASSERT(raySamplePdf > 0);
+
+							// Reverse PDF
+							raySampleRevPdf = VolumeSegment::AccumulateRevPdf(mVolumeSegments);
+							UPBP_ASSERT(raySampleRevPdf > 0);
+
+							// Attenuation
+							cameraState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
+						}
+
+						if (cameraState.mThroughput.isBlackOrNegative())
+							break;
+
+						// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
+						BSDF bsdf(ray, isect, mScene, BSDF::kFromCamera, mScene.RelativeIOR(isect, cameraState.mBoundaryStack));
+
+						if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
+							break;
+
+						// Compute hitpoint
+						Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+
+						originInMedium = isect.IsInMedium();
+
+						// Update affected MIS data
+						const float distSq = Utils::sqr(isect.mDist);
+						mCameraVerticesMisData[cameraState.mPathLength].mPdfAInv = cameraState.mLastPdfWInv * distSq / (raySamplePdf * std::abs(bsdf.CosThetaFix()));
+						mCameraVerticesMisData[cameraState.mPathLength].mRevPdfA = 1.0f;
+						mCameraVerticesMisData[cameraState.mPathLength].mIsDelta = bsdf.IsDelta();
+						mCameraVerticesMisData[cameraState.mPathLength].mIsOnLightSource = isect.mLightID >= 0;
+						mCameraVerticesMisData[cameraState.mPathLength].mIsSpecular = false;
+						mCameraVerticesMisData[cameraState.mPathLength - 1].mRevPdfA *= raySampleRevPdf / distSq;
+
+						// Light source has been hit; terminate afterwards, since
+						// our light sources do not have reflective properties
+						if (isect.mLightID >= 0)
+						{
+							// We cannot end yet
+							if (cameraState.mPathLength < mMinPathLength)
+								break;
+
+							// Stop if we are in the light sampling mode and could have sampled this light last time in the next event estimation
+							if (mAlgorithm == kPTls && cameraState.mPathLength > 1 && !cameraState.mLastSpecular)
+								break;
+
+							// Get hit light
+							const AbstractLight *light = mScene.GetLightPtr(isect.mLightID);
+							UPBP_ASSERT(light);
+
+							// Add its contribution
+							color += cameraState.mThroughput *
+								GetLightRadiance(light, cameraState, hitPoint);
+
+							break;
+						}
+
+						// Terminate if eye sub-path is too long for connections or merging
+						if (cameraState.mPathLength >= mMaxPathLength)
+							break;
+
+						////////////////////////////////////////////////////////////////
+						// Vertex connection: Connect to a light source
+						if (mAlgorithm != kPTdir && !bsdf.IsDelta() && cameraState.mPathLength + 1 >= mMinPathLength && mScene.GetLightCount() > 0)
+						{
+							color += cameraState.mThroughput *
+								DirectIllumination(cameraState, hitPoint, bsdf);
+						}
+
+						////////////////////////////////////////////////////////////////
+						// Vertex connection: Connect to light vertices
+						if (mAlgorithm == kBPT && !bsdf.IsDelta())
+						{
+							// For VC, each light sub-path is assigned to a particular eye
+							// sub-path, as in traditional BPT. It is also possible to
+							// connect to vertices from any light path, but MIS should
+							// be revisited.
+							const Vec2i range(
+								(pathIdx == 0) ? 0 : mPathEnds[pathIdx - 1],
+								mPathEnds[pathIdx]);
+
+							for (int i = range[0]; i < range[1]; i++)
+							{
+								const PathVertex &lightVertex = mLightVertices[i];
+
+								if (lightVertex.mPathLength + 1 +
+									cameraState.mPathLength < mMinPathLength)
+									continue;
+
+								// Light vertices are stored in increasing path length
+								// order; once we go above the max path length, we can
+								// skip the rest
+								if (lightVertex.mPathLength + 1 +
+									cameraState.mPathLength > mMaxPathLength)
+									break;
+
+								// We store all light vertices in order to compute MIS weights but not all can be used for VC
+								if (!lightVertex.mConnectable)
+									continue;
+
+								color += cameraState.mThroughput * lightVertex.mThroughput * ConnectVertices(pathIdx, lightVertex, bsdf, hitPoint, cameraState);
+							}
+						}
+
+						// Continue random walk
+						if (!SampleScattering(bsdf, hitPoint, isect, cameraState, mCameraVerticesMisData[cameraState.mPathLength], mCameraVerticesMisData[cameraState.mPathLength - 1]))
+							break;
+					}
+
+					fbuffer.AddColor(screenSample, color);
 				}
-
-                ////////////////////////////////////////////////////////////////
-                // Vertex connection: Connect to light vertices
-				if (mAlgorithm == kBPT && !bsdf.IsDelta())
-                {
-                    // For VC, each light sub-path is assigned to a particular eye
-                    // sub-path, as in traditional BPT. It is also possible to
-                    // connect to vertices from any light path, but MIS should
-                    // be revisited.
-                    const Vec2i range(
-                        (pathIdx == 0) ? 0 : mPathEnds[pathIdx-1],
-                        mPathEnds[pathIdx]);
-
-                    for (int i = range[0]; i < range[1]; i++)
-                    {
-                        const PathVertex &lightVertex = mLightVertices[i];
-
-                        if (lightVertex.mPathLength + 1 +
-                           cameraState.mPathLength < mMinPathLength)
-                            continue;
-
-                        // Light vertices are stored in increasing path length
-                        // order; once we go above the max path length, we can
-                        // skip the rest
-                        if (lightVertex.mPathLength + 1 +
-                           cameraState.mPathLength > mMaxPathLength)
-                            break;
-
-						// We store all light vertices in order to compute MIS weights but not all can be used for VC
-						if (!lightVertex.mConnectable)
-							continue;
-
-						color += cameraState.mThroughput * lightVertex.mThroughput * ConnectVertices(pathIdx, lightVertex, bsdf, hitPoint, cameraState);
-                    }
-                }
-
-				// Continue random walk
-                if (!SampleScattering(bsdf, hitPoint, isect, cameraState, mCameraVerticesMisData[cameraState.mPathLength], mCameraVerticesMisData[cameraState.mPathLength - 1]))
-                    break;
-            }
-
-            mFramebuffer.AddColor(screenSample, color);
-        }
+		}
 
         mIterations++;
     }
@@ -439,10 +445,11 @@ private:
 
     // Generates new camera sample given a pixel index
     Vec2f GenerateCameraSample(
+		const int    aCameraID,
         const int    aPixelIndex,
         SubPathState &oCameraState)
     {
-        const Camera &camera = mScene.mCamera;
+        const Camera &camera = *mScene.mCameras[aCameraID];
         const int resX = int(camera.mResolution.get(0));
         const int resY = int(camera.mResolution.get(1));
 
@@ -849,13 +856,14 @@ private:
     // Computes contribution of light sample to camera by splatting is onto the
     // framebuffer. Multiplies by throughput (obviously, as nothing is returned).
     void ConnectToCamera(
+		const int          aCameraID,
 		const int          aLightPathIdx,
         const SubPathState &aLightState,
         const Pos          &aHitpoint,
         const BSDF         &aLightBSDF)
     {
         // Get camera and direction to it
-		const Camera &camera  = mScene.mCamera;
+		const Camera &camera  = *mScene.mCameras[aCameraID];
 		Dir directionToCamera = camera.mOrigin - aHitpoint;
 
         // Check point is in front of camera
@@ -937,7 +945,7 @@ private:
 			if (contrib.isBlackOrNegative())
 				return;
 
-            mFramebuffer.AddColor(imagePos, contrib);
+            (*mFramebuffers[aCameraID]).AddColor(imagePos, contrib);
         }
     }
 
