@@ -173,7 +173,7 @@ struct Config
 	Vec2i       mResolution; //!< Resolution of the rendered image.
 
 	int         mNumCameras; //!< Number of cameras used for rendering.
-	Framebuffer **mFramebuffers; //!< Framebuffer that accumulates result of rendering iterations.
+	std::vector<Framebuffer *> mFramebuffers; //!< Framebuffer that accumulates result of rendering iterations.
 	
 	uint mMaxPathLength; //!< Maximum length of constructed paths.
 	uint mMinPathLength; //!< Minimum length of constructed paths.

@@ -111,7 +111,7 @@ public:
 protected:
 
     int          mIterations;
-	std::vector<Framebuffer*> mFramebuffers;
+	std::vector<Framebuffer *> mFramebuffers;
     const Scene& mScene;
 	DebugImages  mDebugImages;
 	BeamDensity  mBeamDensity;

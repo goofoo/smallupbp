@@ -30,12 +30,12 @@
 #include "Misc\Config.hxx"
 
 // Output image in continuous outputting
-void continuousOutput(const int aCameraID, const Config &aConfig, int iter, Framebuffer & accumFrameBuffer, Framebuffer & outputFrameBuffer, AbstractRenderer* renderer, const std::string & name, const std::string & ext, char * filename)
+void continuousOutput(const int aCameraId, const Config &aConfig, int iter, Framebuffer & accumFrameBuffer, Framebuffer & outputFrameBuffer, AbstractRenderer* renderer, const std::string & name, const std::string & ext, char * filename)
 {
 	if (aConfig.mContinuousOutput > 0)
 	{
-		accumFrameBuffer.Add(renderer->GetFramebufferUnscaled(aCameraID));
-		renderer->GetFramebufferUnscaled(aCameraID).Clear();
+		accumFrameBuffer.Add(renderer->GetFramebufferUnscaled(aCameraId));
+		renderer->GetFramebufferUnscaled(aCameraId).Clear();
 		if (iter % aConfig.mContinuousOutput == 0)
 		{
 			outputFrameBuffer.Clear();
@@ -75,9 +75,9 @@ float render(
         renderers[i]->mMaxPathLength = aConfig.mMaxPathLength;
         renderers[i]->mMinPathLength = aConfig.mMinPathLength;
 		renderers[i]->SetupDebugImages(aConfig.mDebugImages);
-		for (size_t camID = 0; camID < aConfig.mNumCameras; camID++)
+		for (size_t camId = 0; camId < aConfig.mNumCameras; camId++)
 		{
-			renderers[i]->SetupBeamDensity(aConfig.mBeamDensType, (aConfig.mScene->mCameras[camID])->mResolution, aConfig.mBeamDensMax);
+			renderers[i]->SetupBeamDensity(aConfig.mBeamDensType, (aConfig.mScene->mCameras[camId])->mResolution, aConfig.mBeamDensMax);
 		}
     }
 
@@ -86,12 +86,12 @@ float render(
 
 	std::vector<Framebuffer *> accumFrameBuffers;
 	std::vector<Framebuffer *> outputFrameBuffers;
-	for (size_t i = 0; i < aConfig.mNumCameras; i++)
+	for (size_t camId = 0; camId < aConfig.mNumCameras; camId++)
 	{
 		accumFrameBuffers.push_back(new Framebuffer());
-		accumFrameBuffers[i]->Setup(aConfig.mResolution);
+		accumFrameBuffers[camId]->Setup(aConfig.mResolution);
 		outputFrameBuffers.push_back(new Framebuffer());
-		outputFrameBuffers[i]->Setup(aConfig.mResolution);
+		outputFrameBuffers[camId]->Setup(aConfig.mResolution);
 	}
 	std::string name = aConfig.mOutputName.substr(0, aConfig.mOutputName.length() - 4);
 	std::string ext = aConfig.mOutputName.substr(aConfig.mOutputName.length() - 3, 3);
@@ -102,18 +102,18 @@ float render(
     if(aConfig.mMaxTime > 0)
     {
         // Time based loop
-#pragma omp parallel shared(iter,accumFrameBuffers,outputFrameBuffers,name,ext,filename)
+//#pragma omp parallel shared(iter,accumFrameBuffers,outputFrameBuffers,name,ext,filename)
         while(clock() < startT + aConfig.mMaxTime*CLOCKS_PER_SEC)
         {
             int threadId = omp_get_thread_num();
 			renderers[threadId]->RunIteration(iter);
 
-#pragma omp critical
+//#pragma omp critical
 			{
 				iter++; // counts number of iterations
-				for (size_t i = 0; i < aConfig.mNumCameras; i++)
+				for (size_t camId = 0; camId < aConfig.mNumCameras; camId++)
 				{
-					continuousOutput(i, aConfig, iter, *accumFrameBuffers[i], *outputFrameBuffers[i], renderers[threadId], name, ext, filename);
+					continuousOutput(camId, aConfig, iter, *accumFrameBuffers[camId], *outputFrameBuffers[camId], renderers[threadId], name, ext, filename);
 				}
 			}
         }
@@ -122,12 +122,12 @@ float render(
     {
         // Iterations based loop
 		int cnt = 0, p = -1;
-#pragma omp parallel for shared(cnt,p,accumFrameBuffers,outputFrameBuffers,name,ext,filename)
+//#pragma omp parallel for shared(cnt,p,accumFrameBuffers,outputFrameBuffers,name,ext,filename)
         for(iter=0; iter < aConfig.mIterations; iter++)
         {
             int threadId = omp_get_thread_num();
 			renderers[threadId]->RunIteration(iter);
-#pragma omp critical
+//#pragma omp critical
 			{
 				++cnt;
 				int percent = (int)(((float)cnt / aConfig.mIterations)*100.0f);
@@ -136,9 +136,9 @@ float render(
 					p = percent;
 					std::cout << percent << "%" << std::endl;
 				}
-				for (size_t i = 0; i < aConfig.mNumCameras; i++)
+				for (size_t camId = 0; camId < aConfig.mNumCameras; camId++)
 				{
-					continuousOutput(i, aConfig, cnt, *accumFrameBuffers[i], *outputFrameBuffers[i], renderers[threadId], name, ext, filename);
+					continuousOutput(camId, aConfig, cnt, *accumFrameBuffers[camId], *outputFrameBuffers[camId], renderers[threadId], name, ext, filename);
 				}
 			}
         }
@@ -150,12 +150,12 @@ float render(
     if(oUsedIterations)
         *oUsedIterations = iter+1;
 
-	for (size_t camID = 0; camID < aConfig.mNumCameras; camID++)
+	for (size_t camId = 0; camId < aConfig.mNumCameras; camId++)
 	{
 		int usedRenderers = 0;
 
 		aConfig.mCameraTracingTime = 0;
-		aConfig.mBeamDensity.Setup(aConfig.mBeamDensType, (aConfig.mScene->mCameras[camID])->mResolution, aConfig.mBeamDensMax);
+		aConfig.mBeamDensity.Setup(aConfig.mBeamDensType, (aConfig.mScene->mCameras[camId])->mResolution, aConfig.mBeamDensMax);
 
 		// Not all created renderers had to have been used.
 		// Those must not participate in accumulation.
@@ -168,13 +168,13 @@ float render(
 			{
 				if (usedRenderers == 0)
 				{
-					renderers[i]->GetFramebuffer(camID, *aConfig.mFramebuffers[camID]);
+					renderers[i]->GetFramebuffer(camId, *aConfig.mFramebuffers[camId]);
 				}
 				else
 				{
 					Framebuffer tmp;
-					renderers[i]->GetFramebuffer(camID, tmp);
-					aConfig.mFramebuffers[camID]->Add(tmp);
+					renderers[i]->GetFramebuffer(camId, tmp);
+					aConfig.mFramebuffers[camId]->Add(tmp);
 				}
 			}
 
@@ -189,12 +189,12 @@ float render(
 		if (aConfig.mContinuousOutput <= 0)
 		{
 			// Scale framebuffer by the number of used renderers
-			aConfig.mFramebuffers[camID]->Scale(1.f / usedRenderers);
+			aConfig.mFramebuffers[camId]->Scale(1.f / usedRenderers);
 		}
 		else
 		{
-			*aConfig.mFramebuffers[camID] = *accumFrameBuffers[camID];
-			aConfig.mFramebuffers[camID]->Scale(1.f / iter);
+			*aConfig.mFramebuffers[camId] = *accumFrameBuffers[camId];
+			aConfig.mFramebuffers[camId]->Scale(1.f / iter);
 		}
 	}
 
@@ -234,12 +234,13 @@ int main(int argc, const char *argv[])
 			return 1;
 
 		// Sets up framebuffer
-		Framebuffer **fbuffers = new Framebuffer *[config.mNumCameras];
-		for (size_t i = 0; i < config.mNumCameras; i++)
+		std::vector<Framebuffer *> cameraFrameBuffers;
+
+		for (size_t camId = 0; camId < config.mNumCameras; camId++)
 		{
-			fbuffers[i] = new Framebuffer();
+			cameraFrameBuffers.push_back(new Framebuffer());
 		}
-		config.mFramebuffers = fbuffers;
+		config.mFramebuffers = cameraFrameBuffers;
 
 		// Prints what we are doing
 		printf("Scene:    %s\n", config.mScene->mSceneName.c_str());
@@ -282,12 +283,12 @@ int main(int argc, const char *argv[])
 		std::string name = config.mOutputName.substr(0, config.mOutputName.length() - 4);
 
 		// Saves the image
-		for (int ci = 0; ci < config.mNumCameras; ci++)
+		for (int camId = 0; camId < config.mNumCameras; camId++)
 		{
 			std::string oName(name);
 			oName += "_cam";
-			oName += '0' + ci;
-			(*fbuffers[ci]).Save(oName + "." + extension, 2.2f /*gamma*/);
+			oName += '0' + camId;
+			(*cameraFrameBuffers[camId]).Save(oName + "." + extension, 2.2f /*gamma*/);
 		}
 		
 		config.mDebugImages.Output(name, extension);
@@ -295,11 +296,10 @@ int main(int argc, const char *argv[])
 
 		// Scene cleanup
 		delete config.mScene;
-		for (size_t i = 0; i < config.mNumCameras; i++)
+		for (size_t camId = 0; camId < config.mNumCameras; camId++)
 		{
-			delete fbuffers[i];
+			delete cameraFrameBuffers[camId];
 		}
-		delete[] fbuffers;
 
 		return 0;
 	}
