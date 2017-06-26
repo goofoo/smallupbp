@@ -36,6 +36,7 @@
 #include <set>
 #include <sstream>
 
+#include "..\Renderers\Multiview.hxx"
 #include "..\Renderers\EyeLight.hxx"
 #include "..\Renderers\PathTracer.hxx"
 #include "..\Renderers\VertexCM.hxx"
@@ -54,6 +55,7 @@ struct Config
      */
     enum Algorithm
     {
+		kMultiview,
         kEyeLight,                
         kProgressivePhotonMapping,
         kBidirectionalPhotonMapping,
@@ -100,6 +102,7 @@ struct Config
     {
         static const char* algorithmNames[kAlgorithmMax] =
         {
+			"multiview",
             "eye light",           
             "progressive photon mapping",
             "bidirectional photon mapping",
@@ -150,7 +153,7 @@ struct Config
     static const char* GetAcronym(Algorithm aAlgorithm)
     {
         static const char* algorithmNames[kAlgorithmMax] = {
-			"el", "ppm", "bpm", "bpt", "vcm", "pt", "vptd", "vpts", "vptls", "vptmis", "lt", "vlt", "pb2d", "bb1d", "vbpt_lt", "vbpt_ptd", "vbpt_ptls", "vbpt_ptmis", "vbpt", "upbp_lt", "upbp_ptd", "upbp_ptls", "upbp_ptmis", "upbp_bpt", "upbp_ppm", "upbp_bpm", "upbp_vcm", "upbp_<tech>[+<tech>]*", "upbp_all" };
+			"mv", "el", "ppm", "bpm", "bpt", "vcm", "pt", "vptd", "vpts", "vptls", "vptmis", "lt", "vlt", "pb2d", "bb1d", "vbpt_lt", "vbpt_ptd", "vbpt_ptls", "vbpt_ptmis", "vbpt", "upbp_lt", "upbp_ptd", "upbp_ptls", "upbp_ptmis", "upbp_bpt", "upbp_ppm", "upbp_bpm", "upbp_vcm", "upbp_<tech>[+<tech>]*", "upbp_all" };
 
         if(aAlgorithm < 0 || aAlgorithm >= kAlgorithmMax)
             return "unknown";
@@ -243,6 +246,8 @@ AbstractRenderer* CreateRenderer(
 
     switch(aConfig.mAlgorithm)
     {
+	case Config::kMultiview:
+		return new Multiview(scene, aSeed);
     case Config::kEyeLight:
         return new EyeLight(scene, aSeed);
     case Config::kPathTracing:
@@ -1075,6 +1080,7 @@ void PrintHelp(const char *argv[])
     printf("    -l <length>    Maximum length of traced paths (default 10).\n");
 	printf("    -t <sec>       Number of seconds to run the algorithm.\n");
 	printf("    -i <iter>      Number of iterations to run the algorithm (default 1).\n");
+	printf("    -nc <camera>   Number of cameras (default 1).\n");
 	printf("    -o <name>      User specified output name, with extension .bmp or .exr (default .exr). The name can be prefixed with relative or absolute path but the path must exists.\n");
 	printf("    -r <res>       Image resolution in format WIDTHxHEIGHT (default 256x256).\n");    
 	printf("    -seed <seed>   Sets base seed (default 1234).\n");
