@@ -185,6 +185,7 @@
   <ItemGroup>
     <ClInclude Include="src\Beams\BeamDensity.hxx" />
     <ClInclude Include="src\Misc\Utils.hxx" />
+    <ClInclude Include="src\Renderers\Multiview.hxx" />
     <ClInclude Include="src\Structs\BoundingBox.hxx" />
     <ClInclude Include="src\Structs\Pixel.hxx" />
     <ClInclude Include="src\Structs\Rgb.hxx" />
