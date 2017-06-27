@@ -247,7 +247,8 @@ AbstractRenderer* CreateRenderer(
     switch(aConfig.mAlgorithm)
     {
 	case Config::kMultiview:
-		return new Multiview(scene, aSeed);
+		return new Multiview(scene, aSeed, Multiview::kLightTracer, aConfig.mPB2DRadiusInitial, aConfig.mPB2DRadiusAlpha, aConfig.mPB2DRadiusCalculation, aConfig.mPB2DRadiusKNN, aConfig.mQueryBeamType,
+			aConfig.mBB1DRadiusInitial, aConfig.mBB1DRadiusAlpha, aConfig.mBB1DRadiusCalculation, aConfig.mBB1DRadiusKNN, aConfig.mPhotonBeamType, aConfig.mBB1DUsedLightSubPathCount, aConfig.mRefPathCountPerIter);
     case Config::kEyeLight:
         return new EyeLight(scene, aSeed);
     case Config::kPathTracing:
@@ -437,6 +438,7 @@ std::string GetDescription(const Config& aConfig, const std::string& aLeadingSpa
 
 			return oss.str();
 		}
+	case Config::kMultiview:
 	case Config::kBeamBeam1D:
 		{
 			std::ostringstream oss;

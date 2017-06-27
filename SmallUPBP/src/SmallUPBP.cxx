@@ -40,9 +40,8 @@ void continuousOutput(const int aCameraId, const Config &aConfig, int iter, Fram
 		{
 			outputFrameBuffer.Clear();
 			outputFrameBuffer.AddScaled(accumFrameBuffer, 1.0f / iter);
-
 			
-			sprintf_s(filename,1024,"%s-%d.%s", name.c_str(), iter, ext.c_str());
+			sprintf_s(filename,1024,"%s_cam%02d-%d.%s", name.c_str(), aCameraId, iter, ext.c_str());
 			//// Saves the image
 			outputFrameBuffer.Save(filename);
 		}
@@ -286,7 +285,7 @@ int main(int argc, const char *argv[])
 		for (int camId = 0; camId < config.mNumCameras; camId++)
 		{
 			std::string oName(name);
-			oName += "_cam";
+			oName += "_cam0";
 			oName += '0' + camId;
 			(*cameraFrameBuffers[camId]).Save(oName + "." + extension, 2.2f /*gamma*/);
 		}

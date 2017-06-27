@@ -37,6 +37,7 @@
 
 #include <limits>
 #include <iostream>
+#include <cstdlib>
 
 #ifdef INFINITY
 	#undef INFINITY
@@ -94,7 +95,7 @@ const float FLOAT_INFINITY = std::numeric_limits<float>::infinity();
  * @param	expr	The expression.
  */
 #define UPBP_ASSERT(expr) \
-	do { if(!(expr)) { std::cerr << "Error: assertion `"#expr"' failed at " << __FILE__ << ":" << __LINE__ << std::endl; exit(2); } } while(0)
+	do { if(!(expr)) { std::cerr << "Error: assertion `"#expr"' failed at " << __FILE__ << ":" << __LINE__ << std::endl; system("pause"); exit(2); } } while(0)
 #else
 
 /**
