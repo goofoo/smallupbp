@@ -43,7 +43,8 @@ public:
 		kBeamBeam2D = 0x2000,
 		kBeamBeam3D = 0x4000,
 		kBeamBeam = kBeamBeam1D | kBeamBeam2D | kBeamBeam3D,
-		kPhotons = kPointPoint | kPointBeam | kBeamBeam
+		kPhotons = kPointPoint | kPointBeam | kBeamBeam,
+		kAll = kLightTracer | kPhotons
 	};
 
 	Multiview(
@@ -121,7 +122,7 @@ public:
 			mLightSubPathCount = float(pathCount);
 
 			if (mBB1DUsedLightSubPathCount < 0)
-				mBB1DUsedLightSubPathCount = -mBB1DUsedLightSubPathCount * pathCount;
+				mBB1DUsedLightSubPathCount = std::abs(mBB1DUsedLightSubPathCount * pathCount);
 
 			// Radius reduction (1st iteration has aIteration == 0, thus offset)
 			// PB2D
@@ -132,7 +133,7 @@ public:
 			float radiusBB1D = mBB1DRadiusInitial * std::pow(1 + aIteration * mBB1DUsedLightSubPathCount / mRefPathCountPerIter, mBB1DRadiusAlpha - 1);
 			radiusBB1D = std::max(radiusBB1D, 1e-7f); // Purely for numeric stability
 
-													  // Clear path ends
+			// Clear path ends
 			mPathEnds.resize(pathCount);
 			memset(&mPathEnds[0], 0, mPathEnds.size() * sizeof(int));
 
@@ -282,19 +283,20 @@ private:
 
 	void CalculatePhotonContributions(const int aCameraID)
 	{
-		Camera &cam = *mScene.mCameras[aCameraID];
-		const int resX = int(cam.mResolution.get(0));
-		const int resY = int(cam.mResolution.get(1));
+		Camera &camera = *mScene.mCameras[aCameraID];
+		Framebuffer &cameraFramebuffer = *mFramebuffers[aCameraID];
+		const int resX = int(camera.mResolution.get(0));
+		const int resY = int(camera.mResolution.get(1));
 		UPBP_ASSERT(mVersion & kPhotons);
 
 		if (mMaxPathLength > 1)
 		{
-			if (mVersion & kPointBeam)
+			if (mVersion & kPointBeam && !mLightVertices.empty())
 			{
 				mEmbreeBre.build(&mLightVertices[0], (int)mLightVertices.size(), mPB2DRadiusCalculation, mPB2DRadiusInitial, mPB2DRadiusKNN, mVerbose);
 			}
 
-			if (mVersion & kBeamBeam)
+			if (mVersion & kBeamBeam && !mPhotonBeamsArray.empty())
 			{
 				mPhotonBeams.build(mPhotonBeamsArray, mBB1DRadiusCalculation, mBB1DRadiusInitial, mBB1DRadiusKNN, mVerbose);
 			}
@@ -313,12 +315,12 @@ private:
 			const Vec2f sample = Vec2f(float(x), float(y)) + mRng.GetVec2f();
 
 			// Create ray through the sample
-			Ray ray = cam.GenerateRay(sample);
+			Ray ray = camera.GenerateRay(sample);
 			Isect isect(1e36f);
 
 			// Init the boundary stack with the global medium and add enclosing material and medium if present
 			mScene.InitBoundaryStack(mBoundaryStack);
-			if (cam.mMatID != -1 && cam.mMedID != -1) mScene.AddToBoundaryStack(cam.mMatID, cam.mMedID, mBoundaryStack);
+			if (camera.mMatID != -1 && camera.mMedID != -1) mScene.AddToBoundaryStack(camera.mMatID, camera.mMedID, mBoundaryStack);
 
 			bool  originInMedium = false;
 			float rayLength;
@@ -380,7 +382,7 @@ private:
 				UPBP_ASSERT(!volumeRadiance.isNanInfNeg());
 			}
 
-			(*mFramebuffers[aCameraID]).AddColor(sample, surfaceRadiance + volumeRadiance);
+			cameraFramebuffer.AddColor(sample, surfaceRadiance + volumeRadiance);
 		}
 
 		mTimer.Stop();

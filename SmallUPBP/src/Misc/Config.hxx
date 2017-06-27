@@ -247,7 +247,7 @@ AbstractRenderer* CreateRenderer(
     switch(aConfig.mAlgorithm)
     {
 	case Config::kMultiview:
-		return new Multiview(scene, aSeed, Multiview::kLightTracer, aConfig.mPB2DRadiusInitial, aConfig.mPB2DRadiusAlpha, aConfig.mPB2DRadiusCalculation, aConfig.mPB2DRadiusKNN, aConfig.mQueryBeamType,
+		return new Multiview(scene, aSeed, Multiview::kAll, aConfig.mPB2DRadiusInitial, aConfig.mPB2DRadiusAlpha, aConfig.mPB2DRadiusCalculation, aConfig.mPB2DRadiusKNN, aConfig.mQueryBeamType,
 			aConfig.mBB1DRadiusInitial, aConfig.mBB1DRadiusAlpha, aConfig.mBB1DRadiusCalculation, aConfig.mBB1DRadiusKNN, aConfig.mPhotonBeamType, aConfig.mBB1DUsedLightSubPathCount, aConfig.mRefPathCountPerIter);
     case Config::kEyeLight:
         return new EyeLight(scene, aSeed);
@@ -1158,14 +1158,14 @@ void PrintShortHelp(const char *argv[])
 	printf("          -1    user must supply additional argument which contains path to an obj scene file  \n");
 	for(int i = 0; i < 5; i++)
 		printf("          %-2d    %s\n", i, g_SceneConfigs[i].mLongName.c_str());
-	printf("          5..%d other predefined simple scenes, for complete list, please see full help (-hf)\n", g_SceneConfigs.size() - 1);
+	printf("          5..%lld other predefined simple scenes, for complete list, please see full help (-hf)\n", g_SceneConfigs.size() - 1);
     
 	printf("    -a  Selects the rendering algorithm (default upbp_all):\n");
     for(int i = (int)Config::kVolumetricLightTracingFromUPBP; i < (int)Config::kAlgorithmMax; i++)
         printf("          %-10s  %s\n",
             Config::GetAcronym(Config::Algorithm(i)),
             Config::GetName(Config::Algorithm(i)));
-	printf("          for complete list, please see full help (-hf)\n", g_SceneConfigs.size());
+	printf("          for complete list, please see full help (-hf)\n");
 
     printf("    -l  Maximum length of traced paths (default 10).\n");
 	printf("    -t  Number of seconds to run the algorithm.\n");
