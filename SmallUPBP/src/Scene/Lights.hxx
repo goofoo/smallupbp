@@ -132,7 +132,7 @@ public:
 
         Dir normal = cross(e1, e2);
         float len    = normal.size();
-        mInvArea     = 2.f / len;
+        mInvArea     = 1.f / len;
         mFrame.SetFromZ(normal);
     }
 
