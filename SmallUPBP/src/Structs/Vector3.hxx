@@ -356,7 +356,15 @@ public:
     }
 
     INLINE float square() const {
-        const float ret = dot(*this, *this);
+        // const float ret = dot(*this, *this);
+#ifndef LEGACY_CPU
+		const float ret = _mm_cvtss_f32(_mm_dp_ps(this->data, this->data, 0x71));
+#else
+		const Dir v1(*this);
+		const Dir res = v1*v1;
+		const float ret = res[0] + res[1] + res[2];
+#pragma message ("Using legacy non-SSE4.1 code")
+#endif
         //UPBP_ASSERT(Float::isReal(ret));
         return ret;
     }
