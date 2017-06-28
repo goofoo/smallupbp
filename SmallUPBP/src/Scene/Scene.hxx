@@ -741,10 +741,10 @@ public:
     {
 		mSceneAcronym = aSceneConfig.mShortName;
 		mSceneName = aSceneConfig.mLongName;
-		for (size_t i = 0; i < mCameras.size(); i++)
+		for (size_t camId = 0; camId < mCameras.size(); camId++)
 		{
-			float cameraOffset = (float)i * 0.01f;
-			(*mCameras[i]).Setup(
+			float cameraOffset = (float)camId * 0.01f;
+			mCameras[camId]->Setup(
 				Pos(-0.0439815f, -4.12529f, 0.222539f),
 				Pos(-0.03709525f + cameraOffset, -3.126785f, 0.1683229f),
 				Dir(3.73896e-4f, 0.0542148f, 0.998529f),
@@ -1181,13 +1181,14 @@ public:
 		//// Setup camera
 		int camMat = obj.camera().material - 1;
 		int camMed = camMat < 0 ? -1 : obj.materials()[camMat + 1].mediumId;
-		for (size_t i = 0; i < mCameras.size(); i++)
+
+		for (size_t camId = 0; camId < mCameras.size(); camId++)
 		{
-			float cameraOffset = (float)i * 0.01f;
-			(*mCameras[i]).Setup(
-				Pos(obj.camera().origin[0], obj.camera().origin[1], obj.camera().origin[2]),
-				Pos(obj.camera().target[0] + cameraOffset, obj.camera().target[1], obj.camera().target[2]),
-				Dir(obj.camera().roll[0], obj.camera().roll[1], obj.camera().roll[2]),
+			float cameraOffset = (float)camId * 0.01f;
+			mCameras[camId]->Setup(
+				Pos( obj.camera().origin[0],  obj.camera().origin[1],  obj.camera().origin[2]),
+				Pos( obj.camera().target[0] + cameraOffset,  obj.camera().target[1],  obj.camera().target[2]),
+				Dir( obj.camera().roll[0],  obj.camera().roll[1],  obj.camera().roll[2]),
 				Vec2f(float(aResolution[0]), float(aResolution[1])),
 				obj.camera().horizontalFOV* 57.295779f,
 				obj.camera().focalDistance, camMat, camMed);
