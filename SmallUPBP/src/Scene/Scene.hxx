@@ -108,7 +108,8 @@ public:
 			kWeakWhiteIsoScattering,
 			kWeakYellowIsoScattering,
 			kWeakWhiteAnisoScattering,
-			kRedAbsorbing, 
+			kRedAbsorbing,
+			kRedAbsorbingAndScattering,
 			kYellowEmitting,
 			kYellowGreenAbsorbingEmittingAndScattering,
 			kBlueAbsorbingAndEmitting,
@@ -829,6 +830,9 @@ public:
 
 		// red absorbing
 		mMedia[SceneConfig::Media::kRedAbsorbing] = new HomogeneousMedium(Rgb(0.0f, 1.0f, 1.0f), Rgb(0.0f), Rgb(0.0f), MEDIUM_SURVIVAL_PROB);
+
+		// red absorbing and scattering
+		mMedia[SceneConfig::Media::kRedAbsorbingAndScattering] = new HomogeneousMedium(Rgb(0.0f, 1.0f, 1.0f), Rgb(0.0f), Rgb(1.0f, 0.0f, 0.0f), MEDIUM_SURVIVAL_PROB);
 
 		// yellow emitting
 		mMedia[SceneConfig::Media::kYellowEmitting] = new HomogeneousMedium(Rgb(0.0f), Rgb(0.7f, 0.7f, 0.0f), Rgb(0.0f), MEDIUM_SURVIVAL_PROB);

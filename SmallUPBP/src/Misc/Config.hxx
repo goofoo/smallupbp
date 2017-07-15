@@ -247,8 +247,7 @@ AbstractRenderer* CreateRenderer(
     switch(aConfig.mAlgorithm)
     {
 	case Config::kMultiview:
-		return new Multiview(scene, aSeed, Multiview::kAll, aConfig.mPB2DRadiusInitial, aConfig.mPB2DRadiusAlpha, aConfig.mPB2DRadiusCalculation, aConfig.mPB2DRadiusKNN, aConfig.mQueryBeamType,
-			aConfig.mBB1DRadiusInitial, aConfig.mBB1DRadiusAlpha, aConfig.mBB1DRadiusCalculation, aConfig.mBB1DRadiusKNN, aConfig.mPhotonBeamType, aConfig.mBB1DUsedLightSubPathCount, aConfig.mRefPathCountPerIter);
+		return new Multiview(scene, aSeed, Multiview::kAll,	aConfig.mBB1DRadiusInitial, aConfig.mBB1DRadiusAlpha, aConfig.mBB1DRadiusCalculation, aConfig.mBB1DRadiusKNN, aConfig.mPhotonBeamType, aConfig.mBB1DUsedLightSubPathCount, aConfig.mRefPathCountPerIter);
     case Config::kEyeLight:
         return new EyeLight(scene, aSeed);
     case Config::kPathTracing:
@@ -362,6 +361,36 @@ std::string GetDescription(const Config& aConfig, const std::string& aLeadingSpa
 {
 	switch (aConfig.mAlgorithm)
 	{
+	case Config::kMultiview:
+	{
+		std::ostringstream oss;
+		oss << aConfig.GetName(aConfig.mAlgorithm) << '\n'
+			<< aLeadingSpaces << "camera count:      " << aConfig.mNumCameras << '\n'
+			<< aLeadingSpaces << "resolution:        " << aConfig.mResolution.x << "x" << aConfig.mResolution.y << '\n'
+			<< aLeadingSpaces << "max path length:   " << aConfig.mMaxPathLength << '\n'
+			<< aLeadingSpaces << "bb1d radius init:  " << aConfig.mBB1DRadiusInitial << '\n'
+			<< aLeadingSpaces << "     radius alpha: " << aConfig.mBB1DRadiusAlpha << '\n';
+
+		if (aConfig.mBB1DRadiusCalculation == KNN_RADIUS)
+			oss << aLeadingSpaces << "     radius knn:   " << aConfig.mBB1DRadiusKNN << '\n';
+
+		oss << aLeadingSpaces << "     used l.paths: " << aConfig.mBB1DUsedLightSubPathCount << '\n';
+
+		if (aConfig.mPhotonBeamType == SHORT_BEAM)
+			oss << aLeadingSpaces << "photon beam type:  SHORT\n";
+		else
+			oss << aLeadingSpaces << "photon beam type:  LONG\n";
+
+		if (aConfig.mMaxBeamsInCell > 0)
+		{
+			oss << aLeadingSpaces << "max beams/cell:    " << aConfig.mMaxBeamsInCell << '\n';
+			oss << aLeadingSpaces << "reduction type:    " << aConfig.mReductionType << '\n';
+		}
+
+		oss << aLeadingSpaces << "ref. paths/iter:   " << aConfig.mRefPathCountPerIter << '\n';
+
+		return oss.str();
+	}
 	case Config::kVolumetricBidirPathTracingFromUPBP:
 		{
 			std::ostringstream oss;
@@ -438,7 +467,7 @@ std::string GetDescription(const Config& aConfig, const std::string& aLeadingSpa
 
 			return oss.str();
 		}
-	case Config::kMultiview:
+	
 	case Config::kBeamBeam1D:
 		{
 			std::ostringstream oss;
@@ -872,6 +901,12 @@ std::vector<SC> initSceneConfigs()
 	config.Reset("glasssphbck", "large glass medium sphere + large area light", SC::Lights::kLightCeilingAreaBig, SC::Media::kClear);
 	config.AddAllElements(cornellBoxWithGlossyFloor);
 	config.AddElement(SC::Element(SC::Geometry::kLargeSphereMiddle, SC::Materials::kGlass, SC::Media::kAbsorbingAnisoScattering));
+	configs.push_back(config);
+
+	// 41
+	config.Reset("s0ss", "scene 0 with scattering sphere", SC::Lights::kLightCeilingAreaSmall, SC::Media::kClear);
+	config.AddAllElements(cornellBoxWithDiffuseFloor);
+	config.AddElement(SC::Element(SC::Geometry::kLargeSphereMiddle, SC::Media::kRedAbsorbingAndScattering));
 	configs.push_back(config);
 
 	return configs;

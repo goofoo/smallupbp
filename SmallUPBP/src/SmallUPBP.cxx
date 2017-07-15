@@ -28,6 +28,7 @@
 
 #include "Bre\EmbreeAcc.hxx"
 #include "Misc\Config.hxx"
+#include "Misc\Timer.hxx"
 
 // Output image in continuous outputting
 void continuousOutput(const int aCameraId, const Config &aConfig, int iter, Framebuffer & accumFrameBuffer, Framebuffer & outputFrameBuffer, AbstractRenderer* renderer, const std::string & name, const std::string & ext, char * filename)
@@ -215,6 +216,8 @@ int main(int argc, const char *argv[])
 {
 	try
 	{
+		Timer program_timer;
+		program_timer.Start();
 		// Warns when not using C++11 Mersenne Twister
 		PrintRngWarning();
 
@@ -299,6 +302,9 @@ int main(int argc, const char *argv[])
 		{
 			delete cameraFrameBuffers[camId];
 		}
+
+		program_timer.Stop();
+		std::cout << "elapsed time: " << program_timer.GetElapsedTime() << "s\n";
 
 		return 0;
 	}
