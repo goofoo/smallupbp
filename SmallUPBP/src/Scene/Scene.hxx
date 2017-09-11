@@ -79,6 +79,7 @@ public:
 			kSmallSphereTop,
 			kVeryLargeSphere,
 			kVeryLargeBox,
+			kBunny,
 			kGeometryCount
 		 };
 
@@ -992,6 +993,7 @@ public:
 				geometryList->mGeometry.push_back(new Sphere(veryLargeSphereCenter, veryLargeSphereRadius, matId, i->mMedium));
 				break;
 			case SceneConfig::Geometry::kVeryLargeBox:
+			{
 				const float mult = 1.0f;
 				geometryList->mGeometry.push_back(new Triangle(cb[7] * mult, cb[3] * mult, cb[4] * mult, matId, i->mMedium));
 				geometryList->mGeometry.push_back(new Triangle(cb[0] * mult, cb[4] * mult, cb[3] * mult, matId, i->mMedium));
@@ -1006,6 +1008,21 @@ public:
 				geometryList->mGeometry.push_back(new Triangle(cb[4] * mult, cb[0] * mult, cb[5] * mult, matId, i->mMedium));
 				geometryList->mGeometry.push_back(new Triangle(cb[1] * mult, cb[5] * mult, cb[0] * mult, matId, i->mMedium));
 				break;
+			}
+			/*case SceneConfig::Geometry::kBunny: {
+				const float mult = 1.0f;
+				ObjReader::ObjFile bunny("..\\scenes\\bunny\\bunny.obj");
+				auto v = bunny.vertices();
+				for(auto bunny_t = bunny.triangles().cbegin(); bunny_t != bunny.triangles().cend(); bunny_t++)
+				{
+					Pos p0 = Pos(v[bunny_t->vindices[0]], v[bunny_t->vindices[0] + 1], v[bunny_t->vindices[0] + 2]);
+					Pos p1 = Pos(v[bunny_t->vindices[1]], v[bunny_t->vindices[1] + 1], v[bunny_t->vindices[1] + 2]);
+					Pos p2 = Pos(v[bunny_t->vindices[2]], v[bunny_t->vindices[2] + 1], v[bunny_t->vindices[2] + 2]);
+					geometryList->mGeometry.push_back(new Triangle(p0 * mult, p1 * mult, p2 * mult, matId, i->mMedium));
+				}
+				break;
+			}*/
+
 			}
 		}
 		

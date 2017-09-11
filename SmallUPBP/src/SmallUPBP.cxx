@@ -102,13 +102,13 @@ float render(
     if(aConfig.mMaxTime > 0)
     {
         // Time based loop
-//#pragma omp parallel shared(iter,accumFrameBuffers,outputFrameBuffers,name,ext,filename)
+#pragma omp parallel shared(iter,accumFrameBuffers,outputFrameBuffers,name,ext,filename)
         while(clock() < startT + aConfig.mMaxTime*CLOCKS_PER_SEC)
         {
             int threadId = omp_get_thread_num();
 			renderers[threadId]->RunIteration(iter);
 
-//#pragma omp critical
+#pragma omp critical
 			{
 				iter++; // counts number of iterations
 				for (size_t camId = 0; camId < aConfig.mNumCameras; camId++)
@@ -122,12 +122,12 @@ float render(
     {
         // Iterations based loop
 		int cnt = 0, p = -1;
-//#pragma omp parallel for shared(cnt,p,accumFrameBuffers,outputFrameBuffers,name,ext,filename)
+#pragma omp parallel for shared(cnt,p,accumFrameBuffers,outputFrameBuffers,name,ext,filename) num_threads(usedThreads)
         for(iter=0; iter < aConfig.mIterations; iter++)
         {
             int threadId = omp_get_thread_num();
 			renderers[threadId]->RunIteration(iter);
-//#pragma omp critical
+#pragma omp critical
 			{
 				++cnt;
 				int percent = (int)(((float)cnt / aConfig.mIterations)*100.0f);

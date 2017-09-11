@@ -625,8 +625,8 @@ typedef Scene::SceneConfig SC;
 std::vector<SC> initSceneConfigs()
 {
 	std::vector<SC> configs;
-	
-	// Preparing a few empty Cornell boxes used in the scenes. 
+
+	// Preparing a few empty Cornell boxes used in the scenes.
 
 	std::vector<SC::Element> cornellBoxWithoutFloor;
 	cornellBoxWithoutFloor.push_back(SC::Element(SC::Geometry::kLeftWall, SC::Materials::kDiffuseGreen));
@@ -908,6 +908,12 @@ std::vector<SC> initSceneConfigs()
 	config.AddAllElements(cornellBoxWithDiffuseFloor);
 	config.AddElement(SC::Element(SC::Geometry::kLargeSphereMiddle, SC::Media::kRedAbsorbingAndScattering));
 	configs.push_back(config);
+
+	// 42
+	/*config.Reset("isobunny", "large isoscattering bunny + small area light", SC::Lights::kLightCeilingAreaSmall, SC::Media::kClear);
+	config.AddAllElements(cornellBoxWithDiffuseFloor);
+	config.AddElement(SC::Element(SC::Geometry::kBunny, SC::Media::kRedAbsorbingAndScattering));
+	configs.push_back(config);*/
 
 	return configs;
 }

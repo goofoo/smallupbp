@@ -1,0 +1,2 @@
+-a mv -nc 3 -i 10 -l 4 -continuous_output 2
+-a mv -s 41 -nc 2 -i 30 -l 4 -continuous_output 1 > "$(ProjectDir)info.txt"

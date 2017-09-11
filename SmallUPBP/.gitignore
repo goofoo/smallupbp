@@ -1,3 +1,4 @@
 # output images
+ignore_folders/
 *.exr
 *.png

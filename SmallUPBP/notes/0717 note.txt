@@ -1,0 +1,19 @@
+1. Surface handling {mirror / glossy} now
+	Ignore surface side issue, concentrate on participatin media
+
+2. How beam do now
+	mutate vertices of beams, pdf of beam should be vertified but may not too different.
+
+3. Pixel reuse
+	Just reuse participating media part
+
+4. Parallel
+	per radius parallel (as framework)
+	generate photon beams
+	join first initial result
+	
+	loop:
+		per radius parallel (as framework)
+		mutate each photon beams
+		join result
+

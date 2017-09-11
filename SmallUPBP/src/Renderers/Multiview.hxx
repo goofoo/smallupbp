@@ -10,10 +10,12 @@
 #include <omp.h>
 
 #include "..\Beams\PhBeams.hxx"
-#include "..\Bre\Bre.hxx"
 #include "..\Misc\Timer.hxx"
 #include "..\Path\VltPathVertex.hxx"
+#include "..\Path\StaticArray.hxx"
 #include "Renderer.hxx"
+
+
 
 class Multiview : public AbstractRenderer
 {
@@ -27,8 +29,14 @@ class Multiview : public AbstractRenderer
 		uint  mIsFiniteLight;     // Just generate by finite light
 		uint  mSpecularPath : 1;  // All scattering events so far were specular
 
+		Isect mIsect;
+		PhotonBeamsArray mBeams;
 		BoundaryStack mBoundaryStack; // Boundary stack
+		VolumeSegments mVolumnSegments;
+		LiteVolumeSegments mLiteVolumnSegments;
 	};
+
+	typedef std::vector<SubPathState> FullPath;
 
 public:
 
@@ -81,10 +89,23 @@ public:
 			mBB1DRadiusInitial = -mBB1DRadiusInitial * mScene.mSceneSphere.mSceneRadius;
 		UPBP_ASSERT(mBB1DRadiusInitial > 0);
 
+		const Camera &tmpCamera = *mScene.mCameras[0];
+		mLightSubPathCount = tmpCamera.mResolution.get(0) * tmpCamera.mResolution.get(1);
+
+		if (mBB1DUsedLightSubPathCount < 0)
+			mBB1DUsedLightSubPathCount = -mBB1DUsedLightSubPathCount * mLightSubPathCount;;
+
+		// Reserve space
+		mPhotonBeamsArray.reserve(mLightSubPathCount * 2);
+		mFullPathes.reserve(mRefPathCountPerIter * 2);
+
 		mPhotonBeams.mSeed = aSeed;
 		for (size_t camId = 0; camId < mScene.mCameras.size(); camId++)
 		{
 			mAccumCameraFramebuffers.push_back(new Framebuffer());
+			Vec2f resolution = mScene.mCameras[camId]->mResolution;
+			size_t NPixels = size_t(resolution.x * resolution.y);
+			mCameraPhotonMasks.push_back(std::vector<int>(NPixels, 0));
 		}
 	}
 
@@ -103,111 +124,279 @@ public:
 			std::cout << " + tracing light sub-paths..." << std::endl;
 		lightSubpathTimer.Start();
 
-		const Camera &constCamera = *mScene.mCameras[0];
-
-		// While we have the same number of pixels (camera paths)
-		// and light paths, we do keep them separate for clarity reasons
-		const int resX = int(constCamera.mResolution.get(0));
-		const int resY = int(constCamera.mResolution.get(1));
-
-		mLightSubPathCount = float(resX * resY);
-
-		if (mBB1DUsedLightSubPathCount < 0) //initial setting = -1
-			mBB1DUsedLightSubPathCount = std::abs(mBB1DUsedLightSubPathCount * mLightSubPathCount);
-
 		// Radius reduction (1st iteration has aIteration == 0, thus offset)
-		// BB1D
 		float radiusBB1D = mBB1DRadiusInitial * std::pow(1 + aIteration * mBB1DUsedLightSubPathCount / mRefPathCountPerIter, mBB1DRadiusAlpha - 1);
 		radiusBB1D = std::max(radiusBB1D, 1e-7f); // Purely for numeric stability
-
-		// Remove all and reserve space for some
-		mPhotonBeamsArray.clear();
-		mPhotonBeamsArray.reserve(mLightSubPathCount * 2);
 
 		//////////////////////////////////////////////////////////////////////////
 		// Generate light paths
 		//////////////////////////////////////////////////////////////////////////
-
+		int ABCSurfMutate = 0;
+		int ABCMediaMutate = 0;
+		int ABMutate = 0;
+		int WillMutate = 0;
 		if (mScene.GetLightCount() > 0 && mMaxPathLength > 1)
-			for (int pathIdx = 0; pathIdx < mLightSubPathCount; pathIdx++)
+		{
+			// If this renderer(thread) first be called
+			if (mIterations == 0)
 			{
-				// Generate light path origin and direction
-				SubPathState lightState;
-				GenerateLightSample(lightState);
-
-				// In attenuating media the ray can never travel from infinity
-				if (!lightState.mIsFiniteLight && mScene.GetGlobalMediumPtr()->HasAttenuation())
-					continue;
-
-				// We assume that the light is on surface
-				bool originInMedium = false;
-
-				//////////////////////////////////////////////////////////////////////////
-				// Trace light path
-				for (;; ++lightState.mPathLength)
+				for (int pathIdx = 0; pathIdx < mLightSubPathCount; pathIdx++)
 				{
-					// Prepare ray
-					Ray ray(lightState.mOrigin, lightState.mDirection);
-					Isect isect(1e36f);
+					FullPath fullpath;
+					mFullPathes.push_back(fullpath);
 
-					// Trace ray
-					mVolumeSegments.clear();
-					mLiteVolumeSegments.clear();
-					bool intersected = mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, mVolumeSegments, mLiteVolumeSegments);
+					// Generate light path origin and direction
+					SubPathState lightState;
+					GenerateLightSample(lightState);
+					
+					// In attenuating media the ray can never travel from infinity
+					if (!lightState.mIsFiniteLight && mScene.GetGlobalMediumPtr()->HasAttenuation())
+						continue;
 
-					// Store beam if required
-					if ((mVersion & kBeamBeam) && pathIdx < mBB1DUsedLightSubPathCount)
+					// We assume that the light is on surface
+					bool originInMedium = false;
+
+					//////////////////////////////////////////////////////////////////////////
+					// Trace light path
+					for (;; ++lightState.mPathLength)
 					{
-						AddBeams(ray, lightState.mThroughput);
-					}
+						// Prepare ray
+						Ray ray(lightState.mOrigin, lightState.mDirection);
+						Isect isect(1e36f);
+						
+						// Trace ray
+						VolumeSegments subpathVolumeSegments;
+						LiteVolumeSegments subpathLiteVolumeSegments;
+						subpathVolumeSegments.clear();
+						subpathLiteVolumeSegments.clear();
 
-					if (!intersected)
-						break;
+						bool intersected = mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, subpathVolumeSegments, subpathLiteVolumeSegments);
 
-					UPBP_ASSERT(isect.IsValid());
+						lightState.mIsect = isect;
+						CloneVolSegs(lightState.mVolumnSegments, subpathVolumeSegments);
+						CloneLiteVolSegs(lightState.mLiteVolumnSegments, subpathLiteVolumeSegments);
 
-					// Attenuate by intersected media (if any)
-					float raySamplePdf(1.0f);
-					if (!mVolumeSegments.empty())
-					{
-						// PDF
-						raySamplePdf = VolumeSegment::AccumulatePdf(mVolumeSegments);
-						UPBP_ASSERT(raySamplePdf > 0);
+						mFullPathes[pathIdx].push_back(lightState);
 
-						// Attenuation
-						lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(mVolumeSegments) / raySamplePdf;
-					}
+						// Store beam if required
+						if ((mVersion & kBeamBeam) && pathIdx < mBB1DUsedLightSubPathCount)
+						{
+							AddBeams(ray, mFullPathes[pathIdx].back(), subpathVolumeSegments, subpathLiteVolumeSegments);
+						}
 
-					if (lightState.mThroughput.isBlackOrNegative())
-						break;
+						if (!intersected)
+							break;
 
-					// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
-					BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
+						UPBP_ASSERT(isect.IsValid());
 
-					if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
-						break;
+						// Attenuate by intersected media (if any)
+						if (!subpathVolumeSegments.empty())
+						{
+							// PDF
+							float raySamplePdf = VolumeSegment::AccumulatePdf(subpathVolumeSegments);
+							UPBP_ASSERT(raySamplePdf > 0);
 
-					// Compute hitpoint
-					const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+							// Attenuation
+							lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(subpathVolumeSegments) / raySamplePdf;
+						}
 
-					// Terminate if the path would become too long after scattering
-					if (lightState.mPathLength + 2 > mMaxPathLength)
-						break;
+						if (lightState.mThroughput.isBlackOrNegative())
+							break;
 
-					// Continue random walk
-					if (!SampleScattering(bsdf, hitPoint, lightState, isect))
-						break;
-				} // Trace light path end
-				////////////////////////////////////////////////////////////////////////////
+						// Prepare scattering function at the hitpoint (BSDF/phase depending on whether the hitpoint is at surface or in media, the isect knows)
+						BSDF bsdf(ray, isect, mScene, BSDF::kFromLight, mScene.RelativeIOR(isect, lightState.mBoundaryStack));
 
+						if (!bsdf.IsValid()) // e.g. hitting surface too parallel with tangent plane
+							break;
+
+						// Compute hitpoint
+						const Pos hitPoint = ray.origin + ray.direction * isect.mDist;
+
+						// Terminate if the path would become too long after scattering
+						if (lightState.mPathLength + 2 > mMaxPathLength)
+							break;
+
+						// Continue random walk
+						if (!SampleScattering(bsdf, hitPoint, lightState, isect))
+							break;
+					} // Trace light path end
+					  ////////////////////////////////////////////////////////////////////////////
+				}
 			}
+			else
+			{
+				// mIterations > 0
+				for (size_t fpIdx = 0; fpIdx < mFullPathes.size(); fpIdx++)
+				{
+					FullPath &pickedFullPath = mFullPathes[fpIdx];
+					int mutateIdx = mRng.GetFloat() * float(pickedFullPath.size());
+					bool pointAInMedium = false;
+					/*
+					*   A              A
+					*    \     C        \     C
+					*     \   /    =>    \   /
+					*      \ /            \ /
+					*       B              Z
+					*/
+					if (mutateIdx == 0)
+					{
+						pointAInMedium = false; // assume light is not in medium
+					}
+					else
+					{
+						pointAInMedium = !pickedFullPath[mutateIdx - 1].mIsect.IsOnSurface();
+					}
+
+					SubPathState &subPathAB = pickedFullPath[mutateIdx];
+					SubPathState subPathAZ;
+					CloneSubPathState(subPathAZ, subPathAB);
+					subPathAZ.mBeams.clear();
+
+					bool willMutate = TryGetMutatedSubpath(subPathAZ, subPathAB, pointAInMedium);
+					if (willMutate)
+					{
+						WillMutate++;
+						if (mutateIdx + 1 < pickedFullPath.size()) // BC path Exists
+						{
+							Ray rayAZ(subPathAZ.mOrigin, subPathAZ.mDirection);
+							Pos hitPointZ = rayAZ.target(subPathAZ.mIsect.mDist);
+							BSDF bsdfZ(rayAZ, subPathAZ.mIsect, mScene, BSDF::kFromLight, mScene.RelativeIOR(subPathAZ.mIsect, subPathAZ.mBoundaryStack));
+							
+							SubPathState &subPathBC = pickedFullPath[mutateIdx + 1];
+							if (bsdfZ.IsValid() && subPathBC.mIsect.IsValid()) //C point Exists
+							{
+								Pos hitPointC = subPathBC.mOrigin + subPathBC.mIsect.mDist * subPathBC.mDirection;
+								Dir dirZC = hitPointC - hitPointZ;
+								Ray rayZC(hitPointZ, dirZC.getNormalized());
+
+								Rgb throughputZ = subPathAZ.mThroughput;
+								AttenuateByIntersectedMedia(throughputZ, subPathAZ.mVolumnSegments);
+
+								if (bsdfZ.IsOnSurface() && !throughputZ.isBlackOrNegative())
+								{	
+									// mutate scattering
+									float cosThetaOut, sfDirPdfW;
+									Rgb sfFactor = bsdfZ.Evaluate(rayZC.direction, cosThetaOut, &sfDirPdfW);
+									throughputZ *= sfFactor * (cosThetaOut / sfDirPdfW);
+									
+									// only support diffuse
+									// only mutate when Z's throughput min component > B's
+									const float BETTER_THROUGHPUT_PROB = 0.7f;
+									bool isToMutationbyBetterThroughput = false;
+									if (throughputZ.isValid() && throughputZ.min() > subPathBC.mThroughput.min())
+									{
+										isToMutationbyBetterThroughput = mRng.GetFloat() < BETTER_THROUGHPUT_PROB;
+									}
+
+									if (throughputZ.isValid() && !throughputZ.isBlackOrNegative() && isToMutationbyBetterThroughput)
+									{
+										SubPathState subPathZC;
+										CloneSubPathState(subPathZC, subPathBC);
+										subPathZC.mBeams.clear();
+										subPathZC.mOrigin = hitPointZ;
+										subPathZC.mThroughput = throughputZ;
+										subPathZC.mDirection = rayZC.direction;
+										Isect isectZC(dirZC.size());
+										BoundaryStack boundaryStackZC;
+										mScene.InitBoundaryStack(boundaryStackZC);
+										VolumeSegments volumeSegmentsZC;
+										LiteVolumeSegments liteVolumeSegmentsZC;
+
+										bool intersected = mScene.Intersect(rayZC, 0, mRng, isectZC, boundaryStackZC, volumeSegmentsZC, liteVolumeSegmentsZC);
+										if ((rayZC.target(isectZC.mDist) - hitPointC).size() < 1e-6)
+										{
+											subPathZC.mIsect = isectZC;
+											subPathZC.mBoundaryStack = boundaryStackZC;
+											CloneVolSegs(subPathZC.mVolumnSegments,volumeSegmentsZC);
+											CloneLiteVolSegs(subPathZC.mLiteVolumnSegments, liteVolumeSegmentsZC);
+
+											AddBeams(rayZC, subPathZC, subPathZC.mVolumnSegments, subPathZC.mLiteVolumnSegments);
+											Rgb throughputC = subPathZC.mThroughput;
+											AttenuateByIntersectedMedia(throughputC, subPathZC.mVolumnSegments);
+
+											/* mutate success finally */
+											ABCSurfMutate++;
+											CloneSubPathState(subPathAB, subPathAZ);
+											CloneSubPathState(subPathBC, subPathZC);
+											UpdateMutateThroughput(pickedFullPath, mutateIdx + 1, throughputC);
+										}
+										else
+										{
+											/* Z don't reach C */
+											// give up mutate
+										}
+									} // End !throughputZ.isBlackOrNegative()
+								}
+								else // in media
+								{
+									SubPathState subPathZC;
+									CloneSubPathState(subPathZC, subPathBC);
+									subPathZC.mBeams.clear();
+									subPathZC.mOrigin = hitPointZ;
+									subPathZC.mThroughput = throughputZ;
+									subPathZC.mDirection = rayZC.direction;
+									Isect isectZC(dirZC.size());
+									BoundaryStack boundaryStackZC;
+									mScene.InitBoundaryStack(boundaryStackZC);
+									VolumeSegments volumeSegmentsZC;
+									LiteVolumeSegments liteVolumeSegmentsZC;
+									bool intersected = mScene.Intersect(rayZC, 0, mRng, isectZC, boundaryStackZC, volumeSegmentsZC, liteVolumeSegmentsZC);
+
+									if ((rayZC.target(isectZC.mDist) - hitPointC).size() < 1e-6)
+									{
+										subPathZC.mIsect = isectZC;
+										subPathZC.mBoundaryStack = boundaryStackZC;
+										CloneVolSegs(subPathZC.mVolumnSegments,volumeSegmentsZC);
+										CloneLiteVolSegs(subPathZC.mLiteVolumnSegments, liteVolumeSegmentsZC);
+
+										AddBeams(rayZC, subPathZC, subPathZC.mVolumnSegments, subPathZC.mLiteVolumnSegments);
+
+										/* if short beam, move B to Z and done */
+
+										//Rgb throughputC = subPathZC.mThroughput;
+										//if (!subPathZC.mVolumnSegments.empty())
+										//{
+										//	// PDF
+										//	float raySamplePdf = VolumeSegment::AccumulatePdf(subPathZC.mVolumnSegments);
+										//	// Attenuation
+										//	throughputC *= VolumeSegment::AccumulateAttenuationWithoutPdf(subPathZC.mVolumnSegments) / raySamplePdf;
+										//}
+
+										/* mutate success finally */
+										ABCMediaMutate++;
+										CloneSubPathState(subPathAB, subPathAZ);
+										CloneSubPathState(subPathBC, subPathZC);
+									}
+									else
+									{
+										/* Z don't reach C */
+										// give up mutate
+									}
+								}
+							}
+						}
+						else // mutSubPath has no next subpath
+						{
+							ABMutate++;
+							CloneSubPathState(subPathAB, subPathAZ);
+						}
+					} // End willMutate
+				}
+			}
+		}
 
 		lightSubpathTimer.Stop();
 		if (mVerbose)
 			std::cout << "    - light sub-path tracing done in " << lightSubpathTimer.GetLastElapsedTime() << " sec. " << std::endl;
+		std::cout << "WillMutate: " << WillMutate << std::endl;
+		std::cout << "ABCSurfMutate: " << ABCSurfMutate << std::endl;
+		std::cout << "ABCMediaMutate: " << ABCMediaMutate << std::endl;
+		std::cout << "ABMutate: " << ABMutate << std::endl;
 
-		if (mMaxPathLength > 1 && (mVersion & kBeamBeam) && !mPhotonBeamsArray.empty())
+		if (mMaxPathLength > 1 && (mVersion & kBeamBeam))
 		{
+			CollectPhotonBeamsToArray();
+			std::cout << "PhotonBeamsArraySize: " << mPhotonBeamsArray.size() << std::endl;
 			mPhotonBeams.build(mPhotonBeamsArray, mBB1DRadiusCalculation, mBB1DRadiusInitial, mBB1DRadiusKNN, mVerbose);
 		}
 
@@ -215,7 +404,6 @@ public:
 		// Each camera tracing
 		//////////////////////////////////////////////////////////////////////////
 
-// #pragma omp parallel for //useless???
 		for (size_t camId = 0; camId < mScene.mCameras.size(); camId++)
 		{
 			Timer cameraTimer;
@@ -237,7 +425,7 @@ public:
 			//////////////////////////////////////////////////////////////////////////
 			// Generate light paths
 			//////////////////////////////////////////////////////////////////////////
-
+			
 			if (mScene.GetLightCount() > 0 && mMaxPathLength > 1)
 			{
 				for (int pathIdx = 0; pathIdx < mLightSubPathCount; pathIdx++)
@@ -262,11 +450,12 @@ public:
 						Isect isect(1e36f);
 
 						// Trace ray
-						VolumeSegments sublightVolumeSegments;
-						LiteVolumeSegments sublightLiteVolumeSegments;
-						sublightVolumeSegments.clear();
-						sublightLiteVolumeSegments.clear();
-						bool intersected = mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, sublightVolumeSegments, sublightLiteVolumeSegments);
+						VolumeSegments subpathVolumeSegments;
+						LiteVolumeSegments subpathLiteVolumeSegments;
+						subpathVolumeSegments.clear();
+						subpathLiteVolumeSegments.clear();
+
+						bool intersected = mScene.Intersect(ray, originInMedium ? AbstractMedium::kOriginInMedium : 0, mRng, isect, lightState.mBoundaryStack, subpathVolumeSegments, subpathLiteVolumeSegments);
 
 						if (!intersected)
 							break;
@@ -278,14 +467,14 @@ public:
 
 						// Attenuate by intersected media (if any)
 						float raySamplePdf(1.0f);
-						if (!sublightVolumeSegments.empty())
+						if (!subpathVolumeSegments.empty())
 						{
 							// PDF
-							raySamplePdf = VolumeSegment::AccumulatePdf(sublightVolumeSegments);
+							raySamplePdf = VolumeSegment::AccumulatePdf(subpathVolumeSegments);
 							UPBP_ASSERT(raySamplePdf > 0);
 
 							// Attenuation
-							lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(sublightVolumeSegments) / raySamplePdf;
+							lightState.mThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(subpathVolumeSegments) / raySamplePdf;
 						}
 
 						if (lightState.mThroughput.isBlackOrNegative())
@@ -387,7 +576,7 @@ private:
 			pixVolumeSegments.clear();
 
 			// Cast primary ray (do not scatter in media - pass all the way until we hit some object)
-			bool hitSomething = mScene.Intersect(ray, isect, pixBoundaryStack, Scene::kIgnoreMediaAltogether, 0, &pixRng, &pixVolumeSegments, NULL, NULL);
+			bool hitSomething = mScene.Intersect(ray, isect, pixBoundaryStack, Scene::kSampleVolumeScattering, 0, &pixRng, &pixVolumeSegments, NULL, NULL);
 
 			const AbstractMedium* medium = (isect.mMedID >= 0) ? mScene.GetMediumPtr(isect.mMedID) : nullptr;
 
@@ -420,8 +609,17 @@ private:
 				rayLength = INFINITY;
 			}
 
-			if ((mMaxPathLength > 1) && !pixVolumeSegments.empty() && medium)
+			if ((mMaxPathLength > 1) && !pixVolumeSegments.empty())
 			{
+				for (size_t i = 0; i < pixVolumeSegments.size(); i++)
+				{
+					// -1 = no medium, 0 = clear medium
+					if (pixVolumeSegments[i].mMediumID > 0) 
+					{
+						mCameraPhotonMasks[aCameraID][pixID] += 1;
+					}
+				}
+
 				// UPBP_ASSERT(medium);
 
 				if (mVersion & kBeamBeam)
@@ -482,7 +680,10 @@ private:
 
 		// Init the boundary stack with the global medium and add enclosing material and medium if present
 		mScene.InitBoundaryStack(oLightState.mBoundaryStack);
-		if (light->mMatID != -1 && light->mMedID != -1) mScene.AddToBoundaryStack(light->mMatID, light->mMedID, oLightState.mBoundaryStack);
+		if (light->mMatID != -1 && light->mMedID != -1)
+		{
+			mScene.AddToBoundaryStack(light->mMatID, light->mMedID, oLightState.mBoundaryStack);
+		}
 	}
 
 	// Computes contribution of light sample to camera by splatting is onto the
@@ -574,7 +775,8 @@ private:
 		Dir   rndTriplet = mRng.GetVec3f(); // x,y for direction, z for component. No rescaling happens
 		float sfDirPdfW, cosThetaOut;
 		uint  sampledEvent;
-
+		// BSDF.hxx#400 for media phase function
+		// if isotrophic, PhaseFunction::Sample return RGB(1/4£k)
 		Rgb sfFactor = aBSDF.Sample(rndTriplet, aoState.mDirection,
 			sfDirPdfW, cosThetaOut, &sampledEvent);
 
@@ -626,13 +828,22 @@ private:
 	// Adds beams to beams array
 	void AddBeams(
 		const Ray		&aRay,
-		const Rgb		&aThroughput
+		SubPathState    &aLightState,
+		const VolumeSegments &aVolumeSegments,
+		const LiteVolumeSegments &aLiteVolumeSegments
 	)
 	{
-		Rgb throughput = aThroughput;
+		Rgb throughput = aLightState.mThroughput;
 		if (mBB1DBeamType == SHORT_BEAM)
 		{
-			for (VolumeSegments::const_iterator it = mVolumeSegments.cbegin(); it != mVolumeSegments.cend(); ++it)
+			if (aVolumeSegments.size() > 0)
+			{
+				const VolumeSegment& first = aVolumeSegments[0];
+				const VolumeSegment& cfirst = *(aVolumeSegments.cbegin());
+				printf("");
+			}
+			
+			for (VolumeSegments::const_iterator it = aVolumeSegments.cbegin(); it != aVolumeSegments.cend(); ++it)
 			{
 				UPBP_ASSERT(it->mMediumID >= 0);
 				PhotonBeam beam;
@@ -643,15 +854,17 @@ private:
 					beam.mLength = it->mDistMax - it->mDistMin;
 					beam.mFlags = SHORT_BEAM;
 					beam.mThroughputAtOrigin = throughput;
-					mPhotonBeamsArray.push_back(beam);
+					aLightState.mBeams.push_back(beam);
+					// mPhotonBeamsArray.push_back(beam);
 				}
 				throughput *= it->mAttenuation / it->mRaySamplePdf;
+				// short beam throughput *= (1, 1, 1)
 			}
 		}
 		else // LONG_BEAM
 		{
 			UPBP_ASSERT(mBB1DBeamType == LONG_BEAM);
-			for (LiteVolumeSegments::const_iterator it = mLiteVolumeSegments.cbegin(); it != mLiteVolumeSegments.cend(); ++it)
+			for (LiteVolumeSegments::const_iterator it = aLiteVolumeSegments.cbegin(); it != aLiteVolumeSegments.cend(); ++it)
 			{
 				UPBP_ASSERT(it->mMediumID >= 0);
 				PhotonBeam beam;
@@ -681,16 +894,167 @@ private:
 		}
 	}
 
+	void CollectPhotonBeamsToArray()
+	{
+		mPhotonBeamsArray.clear();
+		for (auto fp = mFullPathes.cbegin(); fp != mFullPathes.cend(); fp++)
+		{
+			const FullPath &fullpath = *fp;
+			for (auto subpath = fullpath.cbegin(); subpath != fullpath.cend(); subpath++)
+			{
+				const PhotonBeamsArray &beams = subpath->mBeams;
+				for (auto beam = beams.cbegin(); beam != beams.cend(); beam++)
+				{
+					mPhotonBeamsArray.push_back(*beam);
+				}
+			}
+		}
+	}
+
+	bool IsSimilarSubPath(const SubPathState& a, const SubPathState& b)
+	{
+		// intersect on the same mat and the same med
+		if (a.mIsect.mMatID != b.mIsect.mMatID || a.mIsect.mMedID != b.mIsect.mMedID)
+		{
+			return false;
+		}			
+
+		return true;
+	}
+
+	bool TryGetMutatedSubpath(SubPathState& mutatedSubpath, const SubPathState& aRefSubpath, bool aOriginInMedium) {
+		
+		int originInMedium = aOriginInMedium? AbstractMedium::kOriginInMedium : 0;
+
+		if (aRefSubpath.mIsect.IsValid())
+		{
+			Pos hitPointB = aRefSubpath.mOrigin + aRefSubpath.mIsect.mDist * aRefSubpath.mDirection;
+			Dir offsetBtoZ = (mRng.GetVec3f() - Dir(0.5)) * 0.1f; //¡Ó0.05
+			mutatedSubpath.mDirection = (hitPointB + offsetBtoZ - aRefSubpath.mOrigin).getNormalized();
+
+			Ray rayAZ(aRefSubpath.mOrigin, mutatedSubpath.mDirection);
+			Isect isectAZ(1e36f);
+			VolumeSegments volumeSegmentsAZ;
+			LiteVolumeSegments liteVolumeSegmentsAZ;
+			BoundaryStack boundaryStackAZ;
+			mScene.InitBoundaryStack(boundaryStackAZ);
+
+			bool intersected = mScene.Intersect(rayAZ, originInMedium, mRng, isectAZ, boundaryStackAZ, volumeSegmentsAZ, liteVolumeSegmentsAZ);
+
+			mutatedSubpath.mIsect = isectAZ;
+			mutatedSubpath.mBoundaryStack = boundaryStackAZ;
+			CloneVolSegs(mutatedSubpath.mVolumnSegments, volumeSegmentsAZ);
+			CloneLiteVolSegs(mutatedSubpath.mLiteVolumnSegments, liteVolumeSegmentsAZ);
+
+			bool isSimilar = IsSimilarSubPath(mutatedSubpath, aRefSubpath);
+
+			if (isSimilar)
+			{
+				if (mVersion & kBeamBeam)
+				{
+					AddBeams(rayAZ, mutatedSubpath, volumeSegmentsAZ, liteVolumeSegmentsAZ);
+				}
+			}
+
+			return isSimilar;
+		}
+		else // !aRefSubpath.mIsect.IsValid()
+		{
+			return false;
+		}
+	}
+
+	void ScatteringMutation(/*mutatedSubpath, relmutSubpath*/)
+	{
+	}
+
+	void UpdateMutateThroughput(FullPath &aoPickedFullPath, int aIndexOfZC, const Rgb &aThroughputAfterZC)
+	{
+		if (aThroughputAfterZC.isBlackOrNegative())
+		{
+			// remove after
+			if (aoPickedFullPath.begin() + aIndexOfZC != aoPickedFullPath.end())
+			{
+				aoPickedFullPath.erase(aoPickedFullPath.begin() + aIndexOfZC + 1, aoPickedFullPath.end());
+			}
+			return;
+		}
+
+		Rgb throughput(aThroughputAfterZC);
+
+		for (size_t i = aIndexOfZC + 1; i < aoPickedFullPath.size(); i++)
+		{
+			SubPathState &sp = aoPickedFullPath[i];
+			sp.mThroughput = throughput;
+			sp.mBeams.clear();
+			Ray ray(sp.mOrigin, sp.mDirection);
+			AddBeams(ray, sp, sp.mVolumnSegments, sp.mLiteVolumnSegments);
+			
+			if (!sp.mVolumnSegments.empty())
+			{
+				// PDF
+				float raySamplePdf = VolumeSegment::AccumulatePdf(sp.mVolumnSegments);
+				// Attenuation
+				throughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(sp.mVolumnSegments) / raySamplePdf;
+			}
+
+			if (throughput.isBlackOrNegative())
+			{
+				// remove after
+				aoPickedFullPath.erase(aoPickedFullPath.begin() + i + 1, aoPickedFullPath.end());
+				break;
+			}
+		}
+	}
+
+	void AttenuateByIntersectedMedia(Rgb &aoThroughput, const VolumeSegments& aVolumeSegments)
+	{
+		if (!aVolumeSegments.empty())
+		{
+			// PDF
+			float raySamplePdf = VolumeSegment::AccumulatePdf(aVolumeSegments);
+			// Attenuation
+			aoThroughput *= VolumeSegment::AccumulateAttenuationWithoutPdf(aVolumeSegments) / raySamplePdf;
+		}
+	}
+
+	void CloneVolSegs(VolumeSegments &target,  const VolumeSegments &source)
+	{
+		target.clear();
+		for (auto it = source.cbegin(); it != source.cend(); ++it)
+		{
+			target.push_back(*it);
+		}
+	}
+
+	void CloneLiteVolSegs(LiteVolumeSegments &target, const LiteVolumeSegments &source)
+	{
+		target.clear();
+		for (auto it = source.cbegin(); it != source.cend(); ++it)
+		{
+			target.push_back(*it);
+		}
+	}
+
+	void CloneSubPathState(SubPathState &target, const SubPathState &source)
+	{
+		target = source;
+		CloneVolSegs(target.mVolumnSegments, source.mVolumnSegments);
+		CloneLiteVolSegs(target.mLiteVolumnSegments, source.mLiteVolumnSegments);
+	}
 private:
 	// float mScreenPixelCount;    // Number of pixels // no use
 	float mLightSubPathCount;   // Number of light sub-paths
 	float mRefPathCountPerIter; // Reference number of paths per iteration
 
+	std::vector<std::vector<int>> mCameraPhotonMasks;
 	std::vector<Framebuffer *> mAccumCameraFramebuffers;
+	std::vector<FullPath> mFullPathes;
 
 	PhotonBeamsArray mPhotonBeamsArray;	    // Stores photon beams
-	VolumeSegments mVolumeSegments;         // Path segments intersecting media (up to scattering point)
-	LiteVolumeSegments mLiteVolumeSegments; // Lite path segments intersecting media (up to intersection with solid surface)
+	
+	// VolumeSegments mVolumeSegments;         // Path segments intersecting media (up to scattering point)
+	// LiteVolumeSegments mLiteVolumeSegments; // Lite path segments intersecting media (up to intersection with solid surface)
 
 	PhotonBeamsEvaluator mPhotonBeams;
 

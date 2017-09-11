@@ -44,7 +44,7 @@ struct PhotonBeam
 	Rgb		mThroughputAtOrigin;	//!< Path throughput (including emission and division by path PDF) at beam origin.
 	Ray		mRay;					//!< Origin and direction of the photon beam.
 	float   mLength;				//!< Beam length.
-	uint	mFlags;					//!< Various flags.
+	uint	mFlags;					//!< Various flags. {Short, Long} beam.
 	float   mRaySamplePdf;          //!< PDF of sampling through previous media on the generating ray.
 	float   mRaySampleRevPdf;       //!< Reverse PDF of sampling through previous media on the generating ray.
 	uint    mRaySamplingFlags;      //!< Flags for sampling inside the beam.
